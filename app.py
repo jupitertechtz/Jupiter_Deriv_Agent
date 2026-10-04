@@ -56,7 +56,8 @@ async def dashboard():
 async def health():
     s = settings
     return {
-        "token_configured": bool(s.api_token), "session_key_configured": bool(s.session_key),
+        "token_configured": bool(s.api_token), "app_id_configured": bool(s.app_id),
+        "session_key_configured": bool(s.session_key), "account_type": s.account_type,
         "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols), "all_symbols": VOLATILITY_SYMBOLS,
         "strategy": s.strategy, "strategies": list(STRATEGIES), "stake": s.stake,
         "limits": {"max_daily_loss": s.max_daily_loss, "max_trades_per_day": s.max_trades_per_session,

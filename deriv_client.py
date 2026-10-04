@@ -9,6 +9,8 @@ import contextlib
 import itertools
 import json
 import logging
+import urllib.error
+import urllib.request
 
 import websockets
 
@@ -46,12 +48,22 @@ def _parse_shortcode(shortcode: str) -> tuple[str, str]:
 
 
 class DerivClient:
-    def __init__(self, app_id: str, token: str | None = None,
-                 endpoint: str = "wss://ws.derivws.com/websockets/v3"):
-        self.url = f"{endpoint}?app_id={app_id}"
+    """Deriv API (2026): REST for accounts + one-time-password WebSocket login.
+
+    With a token: GET /trading/v1/options/accounts picks the demo (or real) account,
+    POST .../{account_id}/otp returns an authenticated WebSocket URL.
+    Without a token: the public WebSocket (market data only).
+    """
+
+    def __init__(self, app_id: str = "", token: str | None = None,
+                 endpoint: str = "https://api.derivws.com", account_type: str = "demo"):
+        self.base = endpoint.rstrip("/")
+        self.app_id = app_id
         self.token = token
+        self.account_type = account_type
         self.ws = None
         self.account: dict | None = None
+        self.pip_sizes: dict[str, int] = {}
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._streams: dict[int, asyncio.Queue] = {}
@@ -64,12 +76,46 @@ class DerivClient:
     async def __aexit__(self, *exc):
         await self.close()
 
+    # ---------- REST ----------
+    def _rest_sync(self, method: str, path: str) -> dict:
+        req = urllib.request.Request(self.base + path, method=method, data=b"" if method == "POST" else None,
+                                     headers={"Authorization": f"Bearer {self.token}",
+                                              "Deriv-App-ID": self.app_id,
+                                              "Accept": "application/json",
+                                              "User-Agent": "jupiter-deriv-agent/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[:300]
+            code = "InvalidToken" if exc.code in (401, 403) else f"HTTP{exc.code}"
+            raise DerivAPIError({"code": code, "message": f"{method} {path} -> {exc.code}: {body}"}) from exc
+        except urllib.error.URLError as exc:
+            raise ConnectionError(f"Could not reach {self.base}: {exc.reason}") from exc
+
+    async def _rest(self, method: str, path: str) -> dict:
+        return await asyncio.to_thread(self._rest_sync, method, path)
+
     # ---------- connection ----------
     async def connect(self):
-        self.ws = await websockets.connect(self.url, ping_interval=20, ping_timeout=20, max_size=2**23)
-        self._reader = asyncio.create_task(self._read_loop())
         if self.token:
-            self.account = (await self.request({"authorize": self.token}))["authorize"]
+            if not self.app_id:
+                raise DerivAPIError({"code": "AppIdRequired",
+                                     "message": "DERIV_APP_ID must be the App ID registered on developers.deriv.com."})
+            accounts = (await self._rest("GET", "/trading/v1/options/accounts")).get("data", [])
+            active = [a for a in accounts if a.get("status", "active") == "active"]
+            chosen = next((a for a in active if a.get("account_type") == self.account_type), None)
+            if chosen is None:
+                raise DerivAPIError({"code": "NoAccount",
+                                     "message": f"No active {self.account_type} options account for this token."})
+            otp = await self._rest("POST", f"/trading/v1/options/accounts/{chosen['account_id']}/otp")
+            ws_url = otp["data"]["url"]
+            self.account = {"loginid": chosen["account_id"], "is_virtual": chosen["account_type"] == "demo",
+                            "currency": chosen.get("currency"), "balance": chosen.get("balance", 0)}
+        else:
+            ws_url = self.base.replace("https://", "wss://").replace("http://", "ws://") + "/trading/v1/options/ws/public"
+        self.ws = await websockets.connect(ws_url, ping_interval=20, ping_timeout=20, max_size=2**23)
+        self._reader = asyncio.create_task(self._read_loop())
         return self.account
 
     async def close(self):
@@ -156,6 +202,7 @@ class DerivClient:
                 break
         if pip is None:
             pip = _infer_pip_size(prices)
+        self.pip_sizes[symbol] = int(pip)
         return [last_digit(p, pip) for p in prices], int(pip)
 
     # ---------- trading ----------
@@ -167,10 +214,11 @@ class DerivClient:
         req = {"profit_table": 1, "description": 1, "limit": limit, "sort": "DESC",
                "contract_type": ["DIGITMATCH"]}
         if since_epoch is not None:
-            req["date_from"] = int(since_epoch)
+            req["date_from"] = str(int(since_epoch))
         rows = []
         for t in (await self.request(req))["profit_table"].get("transactions", []):
-            symbol, barrier = _parse_shortcode(t.get("shortcode", ""))
+            sc_symbol, barrier = _parse_shortcode(t.get("shortcode", ""))
+            symbol = t.get("underlying_symbol") or sc_symbol
             buy, sell = float(t["buy_price"]), float(t.get("sell_price") or 0)
             rows.append({
                 "contract_id": t["contract_id"], "purchase_time": int(t["purchase_time"]),
@@ -184,7 +232,7 @@ class DerivClient:
             "proposal": 1, "amount": stake, "basis": "stake",
             "contract_type": "DIGITMATCH", "currency": currency,
             "duration": 1, "duration_unit": "t",
-            "symbol": symbol, "barrier": str(digit),
+            "underlying_symbol": symbol, "barrier": str(digit),
         })
         return resp["proposal"]
 

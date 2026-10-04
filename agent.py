@@ -18,7 +18,7 @@ class MatchesAgent:
         if settings.strategy not in STRATEGIES:
             raise SystemExit(f"Unknown STRATEGY '{settings.strategy}'. Options: {', '.join(STRATEGIES)}")
         self.s = settings
-        self.client = DerivClient(settings.app_id, settings.api_token, settings.ws_url)
+        self.client = DerivClient(settings.app_id, settings.api_token, settings.api_base, settings.account_type)
         self.risk = RiskManager(settings)
         self.journal = Journal(settings.trade_log)
         self.strategy = STRATEGIES[settings.strategy]
@@ -104,8 +104,8 @@ class MatchesAgent:
             bought = await self.client.buy(proposal)
             poc = await self.client.wait_for_settlement(bought["contract_id"])
             profit = float(poc["profit"])
-            exit_val = poc.get("exit_tick_display_value")
-            exit_digit = str(exit_val)[-1] if exit_val is not None else ""
+            exit_val = poc.get("exit_spot")
+            exit_digit = last_digit(exit_val, self.client.pip_sizes.get(symbol, 2)) if exit_val is not None else ""
             self.risk.record(profit)
             self.journal.write(
                 account=self.loginid, symbol=symbol, strategy=self.s.strategy, predicted=digit,

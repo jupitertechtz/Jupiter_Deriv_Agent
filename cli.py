@@ -18,7 +18,7 @@ from journal import summarize
 
 async def analyze(settings: Settings, symbols: list[str], ticks: int) -> None:
     results = {}
-    async with DerivClient(settings.app_id, endpoint=settings.ws_url) as client:
+    async with DerivClient(settings.app_id, endpoint=settings.api_base) as client:
         for sym in symbols:
             digits, _ = await client.tick_history(sym, ticks)
             a = DigitAnalyzer(window=len(digits) or 1)

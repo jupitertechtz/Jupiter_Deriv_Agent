@@ -27,8 +27,9 @@ def _symbols() -> tuple:
 class Settings:
     # Connection
     api_token: str = field(default_factory=lambda: os.getenv("DERIV_API_TOKEN", ""))
-    app_id: str = field(default_factory=lambda: os.getenv("DERIV_APP_ID", "1089"))
-    ws_url: str = field(default_factory=lambda: os.getenv("DERIV_WS_URL", "wss://ws.derivws.com/websockets/v3"))
+    app_id: str = field(default_factory=lambda: os.getenv("DERIV_APP_ID", ""))  # from developers.deriv.com
+    api_base: str = field(default_factory=lambda: os.getenv("DERIV_API_BASE", "https://api.derivws.com"))
+    account_type: str = field(default_factory=lambda: os.getenv("ACCOUNT_TYPE", "demo"))  # demo | real
 
     # Trading
     symbols: tuple = field(default_factory=_symbols)

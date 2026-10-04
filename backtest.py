@@ -29,7 +29,7 @@ async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
     unknown = [s for s in strategies if s not in STRATEGIES]
     if unknown:
         raise ValueError(f"Unknown strategies: {', '.join(unknown)}")
-    async with DerivClient(settings.app_id, endpoint=settings.ws_url) as client:
+    async with DerivClient(settings.app_id, settings.api_token or None, settings.api_base, settings.account_type) as client:
         digits, _ = await client.tick_history(symbol, ticks)
         if payout is None:
             try:

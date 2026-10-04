@@ -28,7 +28,7 @@ def _account_info(acct: dict) -> dict:
 
 
 async def analyze_markets(s: Settings, symbols: list[str], ticks: int) -> dict:
-    async with DerivClient(s.app_id, endpoint=s.ws_url) as client:
+    async with DerivClient(s.app_id, endpoint=s.api_base) as client:
         histories = await asyncio.gather(*(client.tick_history(sym, ticks) for sym in symbols))
     k = len(symbols)
     threshold = 0.05 / max(k, 1)
@@ -48,7 +48,7 @@ async def analyze_markets(s: Settings, symbols: list[str], ticks: int) -> dict:
 
 
 async def account_results(s: Settings, limit: int = 500) -> dict:
-    async with DerivClient(s.app_id, s.api_token, s.ws_url) as client:
+    async with DerivClient(s.app_id, s.api_token, s.api_base, s.account_type) as client:
         account = _account_info(client.account)
         rows = await client.matches_history(limit=limit)
         today = await client.matches_history(since_epoch=_start_of_utc_day(), limit=500)
@@ -67,7 +67,7 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + s.session_time_budget
 
-    async with DerivClient(s.app_id, s.api_token, s.ws_url) as client:
+    async with DerivClient(s.app_id, s.api_token, s.api_base, s.account_type) as client:
         acct = client.account
         info = _account_info(acct)
         if not info["is_virtual"] and s.live_trading_confirm != LIVE_CONFIRM_PHRASE:
@@ -129,9 +129,9 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
                     break
                 profit = float(poc["profit"])
                 risk.record(profit)
-                exit_val = poc.get("exit_tick_display_value")
+                exit_val = poc.get("exit_spot")
                 trades.append({"contract_id": bought["contract_id"], "symbol": symbol, "predicted": digit,
-                               "exit_digit": str(exit_val)[-1] if exit_val is not None else None,
+                               "exit_digit": last_digit(exit_val, client.pip_sizes.get(symbol, 2)) if exit_val is not None else None,
                                "stake": float(bought["buy_price"]), "payout": float(bought["payout"]),
                                "profit": round(profit, 2), "status": poc.get("status")})
         except asyncio.TimeoutError:

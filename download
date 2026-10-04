@@ -1,0 +1,4 @@
+Dockerfile
+.env
+trades.csv
+__pycache__/

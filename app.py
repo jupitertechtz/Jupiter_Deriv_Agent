@@ -6,11 +6,11 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from analyzer import STRATEGIES
-from backtest import run_backtest
+from backtest import run_backtest, run_backtest_best_payout
 from config import LIVE_CONFIRM_PHRASE, Settings
 from dashboard import DASHBOARD_HTML
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError
-from services import account_results, analyze_markets, market_payouts, match_probability, run_session
+from services import account_results, analyze_markets, market_payouts, match_probability, run_session, with_overrides
 
 app = FastAPI(title="Jupiter Deriv Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")
 settings = Settings()
@@ -77,9 +77,26 @@ async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None
 
 @app.get("/api/backtest")
 async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=20000),
-                   strategies: str | None = None):
+                   strategies: str | None = None, stake: float | None = None):
+    """Backtest the one market you selected."""
     names = [x.strip() for x in strategies.split(",")] if strategies else list(STRATEGIES)
-    return await _call(run_backtest(settings, _check_symbol(symbol), ticks, names))
+    try:
+        s = with_overrides(settings, stake=stake)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await _call(run_backtest(s, _check_symbol(symbol), ticks, names))
+
+
+@app.get("/api/backtest/best-payout")
+async def backtest_best_payout(ticks: int = Query(5000, ge=1000, le=10000),
+                               strategies: str | None = None, stake: float | None = None):
+    """Find the highest-payout market(s) right now and backtest every market at its own payout."""
+    names = [x.strip() for x in strategies.split(",")] if strategies else list(STRATEGIES)
+    try:
+        s = with_overrides(settings, stake=stake)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await _call(run_backtest_best_payout(s, ticks, names))
 
 
 @app.get("/api/probability")

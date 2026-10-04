@@ -97,11 +97,12 @@ th{font-weight:500;color:var(--muted)}
 
   <section aria-labelledby="h-bt">
     <h2 id="h-bt">Backtest</h2>
-    <p class="hint">Replays recent ticks against each strategy at Deriv's current payout. Any strategy should be judged against the random baseline.</p>
+    <p class="hint">Replays recent ticks against each strategy at Deriv's current payout. "Backtest selected market" tests the market you choose. "Backtest best-payout market" finds the market paying the most right now, tests it, and compares every other market at its own payout. Judge any strategy against the random baseline.</p>
     <div class="row">
       <label>Market<select id="bt-symbol"></select></label>
       <label>Ticks<select id="bt-ticks"><option>5000</option><option selected>10000</option><option>20000</option></select></label>
-      <button id="bt-run">Run backtest</button>
+      <button id="bt-run">Backtest selected market</button>
+      <button id="bt-best" class="ghost">Backtest best-payout market</button>
     </div>
     <div id="bt-out"></div>
   </section>
@@ -213,6 +214,7 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
     for (const id of ['bt-symbol','ss-symbol']) h.all_symbols.forEach(s => $(id).append(el('option',{value:s, selected: s===h.symbols[0]}, mname(s))));
     $('ss-symbol').prepend(el('option',{value:'auto'}, 'Auto: best payout'));
     $('ss-max').value = h.limits.trades_per_run;
+    window.JDA_STRATEGY = h.strategy;
     const stIn=$('stake'), dlIn=$('dloss'), lrIn=$('lrow'), tdIn=$('tday');
     stIn.min=h.min_stake; stIn.max=h.max_stake; dlIn.max=h.max_daily_loss_ceiling; lrIn.max=h.max_losses_in_row_ceiling; tdIn.max=h.max_trades_per_day_ceiling;
     let saved={}; try{ saved=JSON.parse(localStorage.getItem('jda-settings')||'{}'); }catch(e){}
@@ -254,10 +256,39 @@ $('an-run').onclick = e => busy(e.target, async ()=>{
   }catch(err){ message(out, err.message, true); }
 });
 
+function btStake(){ try{ return '&stake='+tradeSettings().stake; }catch(e){ return ''; } }
+function strategyRows(results){ return results.map(r=>[r.strategy, r.trades, r.wins, pct(r.win_rate), {text:money(r.pnl), cls:cls(r.pnl)}, r.luck_p.toFixed(3)]); }
+
+$('bt-best').onclick = e => busy(e.target, async ()=>{
+  const out=$('bt-out');
+  const ticks=Math.min(+$('bt-ticks').value, 10000);
+  message(out,'Checking every market\'s payout and replaying '+ticks.toLocaleString()+' ticks on each. This can take up to a minute…');
+  try{
+    const d = await api('/api/backtest/best-payout?ticks='+ticks+btStake());
+    const best=d.markets.filter(m=>m.best), top=best[0];
+    const nodes=[];
+    nodes.push(el('p',{className:'msg'}, d.all_equal
+      ? 'All '+d.markets.length+' markets pay $'+d.top_payout.toFixed(2)+' on a $'+d.stake.toFixed(2)+' stake, so they tie for the highest payout. Showing '+mname(top.symbol)+' first.'
+      : 'Highest payout: '+best.map(m=>mname(m.symbol)).join(', ')+' at $'+d.top_payout.toFixed(2)+' on a $'+d.stake.toFixed(2)+' stake, which needs '+pct(top.breakeven_rate)+' wins to break even. Chance gives 10.0% on every market.'));
+    if(ticks < +$('bt-ticks').value) nodes.push(el('p',{className:'hint'},'Limited to 10,000 ticks per market so all ten finish in time.'));
+    nodes.push(el('h3',{style:'font-size:1rem;margin:16px 0 0'}, 'Highest-payout market: '+mname(top.symbol)+' ('+top.ticks.toLocaleString()+' ticks)'));
+    nodes.push(table(['Strategy','Trades','Wins','Win rate','P&L ($)','Luck p'], strategyRows(top.results)));
+    const strat = window.JDA_STRATEGY && top.results.some(r=>r.strategy===window.JDA_STRATEGY) ? window.JDA_STRATEGY : top.results[0].strategy;
+    const pick=(m,n)=>m.results.find(r=>r.strategy===n);
+    nodes.push(el('h3',{style:'font-size:1rem;margin:18px 0 0'}, 'All markets, best payout first'));
+    nodes.push(table(['Market','Payout','Break-even','"'+strat+'" win rate','"'+strat+'" P&L ($)','Random win rate','Random P&L ($)'],
+      d.markets.map(m=>{ const a=pick(m,strat), r=pick(m,'random');
+        return [mname(m.symbol)+(m.best && !d.all_equal?' (best)':''), '$'+m.payout.toFixed(2), pct(m.breakeven_rate), pct(a.win_rate), {text:money(a.pnl),cls:cls(a.pnl)}, r?pct(r.win_rate):'–', r?{text:money(r.pnl),cls:cls(r.pnl)}:'–']; })));
+    if(d.unavailable.length) nodes.push(el('p',{className:'hint',style:'margin-top:8px'}, 'No payout right now for: '+d.unavailable.map(mname).join(', ')+'.'));
+    nodes.push(el('p',{className:'verdict'}, 'A higher payout lowers the break-even rate but does not raise the 10% chance of a match. A strategy only has an edge if it beats "random" on several markets and on fresh data.'));
+    out.replaceChildren(...nodes);
+  }catch(err){ message(out, err.message, true); }
+});
+
 $('bt-run').onclick = e => busy(e.target, async ()=>{
   const out=$('bt-out'); message(out,'Replaying ticks…');
   try{
-    const d = await api('/api/backtest?symbol='+$('bt-symbol').value+'&ticks='+$('bt-ticks').value);
+    const d = await api('/api/backtest?symbol='+$('bt-symbol').value+'&ticks='+$('bt-ticks').value+btStake());
     const rows = d.results.map(r=>[r.strategy, r.trades, r.wins, pct(r.win_rate), {text:money(r.pnl), cls:cls(r.pnl)}, r.luck_p.toFixed(3)]);
     out.replaceChildren(
       el('p',{className:'msg'}, mname(d.symbol)+': '+d.ticks+' ticks. A $'+d.stake.toFixed(2)+' stake pays $'+d.payout.toFixed(2)+', so breaking even needs '+pct(d.breakeven_rate)+' wins; chance gives 10.0%.'),

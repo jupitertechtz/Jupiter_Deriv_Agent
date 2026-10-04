@@ -1,6 +1,8 @@
 """Replay real tick history against each strategy, using Deriv's live payout."""
+import asyncio
+
 from analyzer import STRATEGIES, DigitAnalyzer
-from deriv_client import DerivAPIError, DerivClient
+from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError, DerivClient
 from stats import binom_sf
 
 
@@ -26,6 +28,7 @@ def backtest_digits(digits, strategy_name: str, window: int, every: int,
 
 async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
                        payout: float | None = None) -> dict:
+    """Backtest one selected market at its live payout."""
     unknown = [s for s in strategies if s not in STRATEGIES]
     if unknown:
         raise ValueError(f"Unknown strategies: {', '.join(unknown)}")
@@ -42,6 +45,44 @@ async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
         "breakeven_rate": settings.stake / payout,
         "results": [backtest_digits(digits, name, settings.window, settings.trade_every_n_ticks,
                                     settings.stake, payout) for name in strategies],
+    }
+
+
+async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) -> dict:
+    """Find the market(s) with the highest live Matches payout and backtest every market at its own payout.
+
+    Markets are returned best payout first; every market that ties for the top payout is marked best."""
+    unknown = [s for s in strategies if s not in STRATEGIES]
+    if unknown:
+        raise ValueError(f"Unknown strategies: {', '.join(unknown)}")
+    async with DerivClient(settings.app_id, settings.api_token or None, settings.api_base, settings.account_type) as client:
+        async def payout(sym):
+            try:
+                return float((await client.matches_proposal(sym, 5, settings.stake, settings.currency))["payout"])
+            except DerivAPIError:
+                return None
+        payouts = dict(zip(VOLATILITY_SYMBOLS, await asyncio.gather(*(payout(s) for s in VOLATILITY_SYMBOLS))))
+        paying = [s for s in VOLATILITY_SYMBOLS if payouts[s]]
+        if not paying:
+            raise ValueError("Deriv did not return a payout for any market. Try again shortly.")
+        histories = dict(zip(paying, await asyncio.gather(*(client.tick_history(s, ticks) for s in paying))))
+
+    top = max(payouts[s] for s in paying)
+    markets = []
+    for sym in paying:
+        digits = histories[sym][0]
+        markets.append({
+            "symbol": sym, "payout": payouts[sym], "ticks": len(digits),
+            "breakeven_rate": settings.stake / payouts[sym], "best": payouts[sym] >= top - 0.005,
+            "results": [backtest_digits(digits, name, settings.window, settings.trade_every_n_ticks,
+                                        settings.stake, payouts[sym]) for name in strategies],
+        })
+    markets.sort(key=lambda m: (-m["payout"], VOLATILITY_SYMBOLS.index(m["symbol"])))
+    best = [m["symbol"] for m in markets if m["best"]]
+    return {
+        "stake": settings.stake, "top_payout": top, "best_markets": best,
+        "all_equal": len(best) == len(markets), "unavailable": [s for s in VOLATILITY_SYMBOLS if not payouts[s]],
+        "markets": markets,
     }
 
 

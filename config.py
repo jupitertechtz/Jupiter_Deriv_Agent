@@ -62,3 +62,5 @@ class Settings:
     session_max_trades: int = field(default_factory=lambda: _i("SESSION_MAX_TRADES", "10"))
     session_time_budget: float = field(default_factory=lambda: _f("SESSION_TIME_BUDGET", "50"))
     session_trade_every_n_ticks: int = field(default_factory=lambda: _i("SESSION_TRADE_EVERY_N_TICKS", "1"))
+    # Auto market mode: re-check every market's payout every N trades (1 = before every trade)
+    auto_rescan_every: int = field(default_factory=lambda: _i("AUTO_RESCAN_EVERY", "1"))

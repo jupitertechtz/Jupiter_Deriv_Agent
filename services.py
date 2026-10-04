@@ -118,11 +118,28 @@ async def scan_payouts(client: DerivClient, s: Settings) -> list[dict]:
     return sorted(rows, key=lambda r: -(r["payout"] or 0))
 
 
+def pick_market(scan: list[dict], previous: str | None) -> str | None:
+    """Highest payout wins. Markets tied at the top payout take turns, in list order."""
+    paying = [r for r in scan if r.get("payout")]
+    if not paying:
+        return None
+    top = max(r["payout"] for r in paying)
+    tied = [r["symbol"] for r in paying if r["payout"] >= top - 0.005]
+    tied.sort(key=VOLATILITY_SYMBOLS.index)
+    if previous in tied:
+        return tied[(tied.index(previous) + 1) % len(tied)]
+    return tied[0]
+
+
 async def market_payouts(s: Settings, stake: float | None = None) -> dict:
     s = with_overrides(s, stake=stake)
     async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
         rows = await scan_payouts(client, s)
-    return {"stake": s.stake, "markets": rows}
+    paying = [r["payout"] for r in rows if r.get("payout")]
+    top = max(paying) if paying else None
+    for r in rows:
+        r["best"] = bool(top and r.get("payout") and r["payout"] >= top - 0.005)
+    return {"stake": s.stake, "markets": rows, "all_equal": bool(paying) and max(paying) - min(paying) < 0.005}
 
 
 def _account_info(acct: dict) -> dict:
@@ -173,7 +190,10 @@ async def account_results(s: Settings, limit: int = 500, account_type: str | Non
 async def run_session(s: Settings, symbol: str | None = None, max_trades: int | None = None,
                       account_type: str | None = None, stake: float | None = None,
                       daily_loss_limit: float | None = None, max_losses_in_row: int | None = None,
-                      max_trades_per_day: int | None = None, count_since: int | None = None) -> dict:
+                      max_trades_per_day: int | None = None, count_since: int | None = None,
+                      last_symbol: str | None = None) -> dict:
+    """One capped run. symbol="auto" re-checks every market's payout during the run and trades the
+    best-paying one, rotating through markets that tie for the best payout."""
     s = with_overrides(_for_account(s, account_type), stake=stake, daily_loss_limit=daily_loss_limit,
                        max_losses_in_row=max_losses_in_row, max_trades_per_day=max_trades_per_day)
     since = counting_start(count_since)
@@ -185,20 +205,11 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
     deadline = loop.time() + s.session_time_budget
 
     async with DerivClient(s.app_id, s.api_token, s.api_base, s.account_type) as client:
-        acct = client.account
-        info = _account_info(acct)
+        info = _account_info(client.account)
         if not info["is_virtual"] and s.live_trading_confirm != LIVE_CONFIRM_PHRASE:
             raise PermissionError("This token belongs to a REAL-money account. Sessions only run on the demo "
                                   "account unless LIVE_TRADING_CONFIRM is set to the exact phrase in config.py.")
-        currency = info["currency"] or s.currency
-        s = dataclasses.replace(s, currency=currency)
-        scan = None
-        if symbol == "auto":
-            scan = await scan_payouts(client, s)
-            best = next((r for r in scan if r["payout"]), None)
-            if best is None:
-                raise ValueError("Could not get a payout for any market right now. Try again shortly.")
-            symbol = best["symbol"]
+        s = dataclasses.replace(s, currency=info["currency"] or s.currency)
 
         # Rebuild today's risk state from Deriv, oldest first.
         risk = RiskManager(s)
@@ -207,40 +218,59 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
         trades_before = risk.session_trades
         risk.session_pnl, risk.session_wins = 0.0, 0
 
+        trades, errors, switches = [], [], []
+        scan, current = None, (last_symbol if auto else symbol)
         analyzer = DigitAnalyzer(s.window)
-        digits, _ = await client.tick_history(symbol, s.window)
-        analyzer.extend(digits)
-        new_tick = asyncio.Event()
+        feeder, new_tick = None, asyncio.Event()
 
-        async def feed():
-            gen = client.subscribe({"ticks": symbol})
-            try:
-                async for msg in gen:
-                    analyzer.add(last_digit(msg["tick"]["quote"], msg["tick"]["pip_size"]))
-                    new_tick.set()
-            finally:
-                with contextlib.suppress(Exception):
-                    await gen.aclose()
+        if not auto:
+            analyzer.extend((await client.tick_history(symbol, s.window))[0])
 
-        feeder = asyncio.create_task(feed())
-        trades, errors = [], []
+            async def feed():
+                gen = client.subscribe({"ticks": symbol})
+                try:
+                    async for msg in gen:
+                        analyzer.add(last_digit(msg["tick"]["quote"], msg["tick"]["pip_size"]))
+                        new_tick.set()
+                finally:
+                    with contextlib.suppress(Exception):
+                        await gen.aclose()
+            feeder = asyncio.create_task(feed())
+
         stop_reason = f"reached {max_trades} trades for this run"
+        attempts = 0
         try:
             while len(trades) < max_trades:
-                remaining = deadline - loop.time()
-                if remaining < 12:
+                if deadline - loop.time() < 12:
                     stop_reason = "time budget for this run used up"
                     break
                 ok, reason = risk.can_trade()
                 if not ok:
                     stop_reason = reason
                     break
-                for _ in range(max(1, s.session_trade_every_n_ticks)):
-                    new_tick.clear()
-                    await asyncio.wait_for(new_tick.wait(), timeout=10)
+
+                if auto:
+                    if scan is None or attempts % max(1, s.auto_rescan_every) == 0:
+                        scan = await scan_payouts(client, s)
+                    chosen = pick_market(scan, current)
+                    if chosen is None:
+                        stop_reason = "no market is offering a payout right now"
+                        break
+                    if chosen != current:
+                        switches.append({"to": chosen, "payout": next(r["payout"] for r in scan if r["symbol"] == chosen)})
+                    current = chosen
+                    # fresh recent digits for the chosen market
+                    analyzer = DigitAnalyzer(s.window)
+                    analyzer.extend((await client.tick_history(current, s.window))[0])
+                else:
+                    for _ in range(max(1, s.session_trade_every_n_ticks)):
+                        new_tick.clear()
+                        await asyncio.wait_for(new_tick.wait(), timeout=10)
+                attempts += 1
+
                 digit = strategy(analyzer)
                 try:
-                    prop = await client.matches_proposal(symbol, digit, s.stake, currency)
+                    prop = await client.matches_proposal(current, digit, s.stake, s.currency)
                     bought = await client.buy(prop)
                     poc = await client.wait_for_settlement(bought["contract_id"],
                                                            timeout=max(5, min(30, deadline - loop.time() - 2)))
@@ -255,21 +285,26 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
                 profit = float(poc["profit"])
                 risk.record(profit)
                 exit_val = poc.get("exit_spot")
-                trades.append({"contract_id": bought["contract_id"], "symbol": symbol, "predicted": digit,
-                               "exit_digit": last_digit(exit_val, client.pip_sizes.get(symbol, 2)) if exit_val is not None else None,
+                trades.append({"contract_id": bought["contract_id"], "symbol": current, "predicted": digit,
+                               "exit_digit": last_digit(exit_val, client.pip_sizes.get(current, 2)) if exit_val is not None else None,
                                "stake": float(bought["buy_price"]), "payout": float(bought["payout"]),
                                "profit": round(profit, 2), "status": poc.get("status")})
         except asyncio.TimeoutError:
             stop_reason = "tick stream went quiet"
         finally:
-            feeder.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await feeder
+            if feeder:
+                feeder.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await feeder
         with contextlib.suppress(Exception):
             info["balance"] = await client.balance()
 
+    used = {}
+    for t in trades:
+        used[t["symbol"]] = used.get(t["symbol"], 0) + 1
     return {
-        "account": info, "symbol": symbol, "auto_selected": auto, "market_scan": scan,
+        "account": info, "symbol": current or symbol, "auto_selected": auto, "market_scan": scan,
+        "markets_used": used, "switches": switches,
         "strategy": s.strategy, "stake": s.stake, "stop_reason": stop_reason,
         "can_continue": stop_reason.startswith("reached") or stop_reason.startswith("time budget"),
         "trades": trades, "errors": errors,

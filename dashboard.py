@@ -127,7 +127,7 @@ th{font-weight:500;color:var(--muted)}
       <button id="auto-run" class="ghost">Start auto-trading</button>
       <button id="rs-run" class="ghost">Load results</button>
     </div>
-    <p class="hint" id="auto-hint">Market "Auto: best payout" picks the highest-paying market at the start of every run. Every market gives each digit the same 1-in-10 chance; a higher payout only means losing a little less. Auto-trading repeats runs until a limit is hit or you press Stop, and stops if you close this page.</p>
+    <p class="hint" id="auto-hint">Market "Auto: best payout" re-checks every market&#39;s payout before each trade, trades the highest-paying one, and rotates between markets that tie for the best payout. Every market gives each digit the same 1-in-10 chance; a higher payout only means losing a little less. Auto-trading repeats runs until a limit is hit or you press Stop, and stops if you close this page.</p>
     <div class="counters" aria-live="polite">
       <div id="ctr-text" class="hint">Limit counters: run a session or load results to see them.</div>
       <button id="ctr-reset" class="ghost">Reset counters</button>
@@ -277,14 +277,17 @@ function showResults(out, d){
 }
 
 function sessionNodes(d){
-  const where = mname(d.symbol)+(d.auto_selected?' (auto: best payout)':'');
+  if(d.auto_selected && d.symbol) lastAutoSymbol=d.symbol;
+  const used=Object.entries(d.markets_used||{});
+  const where = d.auto_selected ? (used.length ? 'auto: best payout, traded on '+used.map(([m,n])=>mname(m)+' ('+n+')').join(', ') : 'auto: best payout') : mname(d.symbol);
   const nodes=[el('p',{className:'msg'}, (d.account.is_virtual?'Demo':'Real')+' account '+d.account.loginid+', '+where+'. Stopped because: '+d.stop_reason+'.')];
   nodes.push(figures([['$'+d.stake.toFixed(2),'stake'],[String(d.run.trades),'trades this run'],[String(d.run.wins),'won'],[money(d.run.pnl),'this run ($)',cls(d.run.pnl)],[money(d.today.pnl),'today ($), limit -'+d.today.daily_loss_cap.toFixed(2),cls(d.today.pnl)],[d.account.balance.toFixed(2),'balance']]));
   if(d.trades.length) nodes.push(table(['Contract','Market','Bet','Exit','Result','P&L ($)'], d.trades.map(t=>[String(t.contract_id), mname(t.symbol), t.predicted, t.exit_digit??'–', t.status, {text:money(t.profit), cls:cls(t.profit)}])));
   d.errors.forEach(x=>nodes.push(el('p',{className:'msg err'}, x)));
   return nodes;
 }
-function sessionBody(ts){ return JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account(), ...ts}); }
+let lastAutoSymbol=null;
+function sessionBody(ts){ return JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account(), last_symbol:lastAutoSymbol, ...ts}); }
 
 let autoOn=false, autoTotals=null;
 function setAuto(on){
@@ -326,8 +329,9 @@ $('po-run').onclick = e => busy(e.target, async ()=>{
   const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');
   try{
     const d=await api('/api/payouts?stake='+tradeSettings().stake);
-    const rows=d.markets.map((m,i)=> m.payout ? [mname(m.symbol)+(i===0?' (best)':''), '$'+m.payout.toFixed(2), pct(m.breakeven_rate), {text:money(m.expected_per_trade), cls:cls(m.expected_per_trade)}] : [mname(m.symbol),'–','–','unavailable']);
-    out.replaceChildren(el('p',{className:'msg'},'Payouts for a $'+d.stake.toFixed(2)+' Matches bet. The chance of a match is 10% on every market.'), table(['Market','Payout','Break-even','Expected per trade ($)'], rows));
+    const rows=d.markets.map(m=> m.payout ? [mname(m.symbol)+(m.best && !d.all_equal?' (best)':''), '$'+m.payout.toFixed(2), pct(m.breakeven_rate), {text:money(m.expected_per_trade), cls:cls(m.expected_per_trade)}] : [mname(m.symbol),'–','–','unavailable']);
+    const note = d.all_equal ? 'Every market pays the same right now, so auto mode rotates through all of them. ' : 'Auto mode trades the best-paying market and rotates between markets tied for best. ';
+    out.replaceChildren(el('p',{className:'msg'},'Payouts for a $'+d.stake.toFixed(2)+' Matches bet. '+note+'The chance of a match is 10% on every market.'), table(['Market','Payout','Break-even','Expected per trade ($)'], rows));
   }catch(err){ message(out, err.message, true); }
 });
 

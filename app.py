@@ -109,6 +109,7 @@ class SessionRequest(BaseModel):
     max_losses_in_row: int | None = None
     max_trades_per_day: int | None = None
     count_since: int | None = None   # epoch seconds of the user's last counter reset
+    last_symbol: str | None = None   # auto mode: market used last, so rotation continues across runs
 
 
 @app.post("/api/session")
@@ -121,7 +122,8 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
         raise HTTPException(400, "Account must be 'demo' or 'real'.")
     return await _call(run_session(settings, symbol, body.max_trades, body.account,
                                    body.stake, body.daily_loss_limit, body.max_losses_in_row,
-                                   body.max_trades_per_day, body.count_since))
+                                   body.max_trades_per_day, body.count_since,
+                                   body.last_symbol if body.last_symbol in VOLATILITY_SYMBOLS else None))
 
 
 @app.get("/api/cron")

@@ -10,7 +10,7 @@ from backtest import run_backtest
 from config import LIVE_CONFIRM_PHRASE, Settings
 from dashboard import DASHBOARD_HTML
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError
-from services import account_results, analyze_markets, run_session
+from services import account_results, analyze_markets, market_payouts, match_probability, run_session
 
 app = FastAPI(title="Jupiter Deriv Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")
 settings = Settings()
@@ -61,6 +61,7 @@ async def health():
         "live_enabled": s.live_trading_confirm == LIVE_CONFIRM_PHRASE,
         "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols), "all_symbols": VOLATILITY_SYMBOLS,
         "strategy": s.strategy, "strategies": list(STRATEGIES), "stake": s.stake,
+        "min_stake": s.min_stake, "max_stake": s.max_stake, "max_daily_loss_ceiling": s.max_daily_loss_ceiling,
         "limits": {"max_daily_loss": s.max_daily_loss, "max_trades_per_day": s.max_trades_per_session,
                    "max_consecutive_losses": s.max_consecutive_losses,
                    "trades_per_run": s.session_max_trades},
@@ -80,6 +81,16 @@ async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=
     return await _call(run_backtest(settings, _check_symbol(symbol), ticks, names))
 
 
+@app.get("/api/probability")
+async def probability(symbol: str = "R_100", stake: float | None = None):
+    return await _call(match_probability(settings, _check_symbol(symbol), stake))
+
+
+@app.get("/api/payouts")
+async def payouts(stake: float | None = None):
+    return await _call(market_payouts(settings, stake))
+
+
 @app.get("/api/results")
 async def results(account: str = Query("demo", pattern="^(demo|real)$"),
                   x_session_key: str | None = Header(None)):
@@ -92,6 +103,8 @@ class SessionRequest(BaseModel):
     symbol: str | None = None
     max_trades: int | None = None
     account: str = "demo"   # "demo" or "real"
+    stake: float | None = None
+    daily_loss_limit: float | None = None
 
 
 @app.post("/api/session")
@@ -99,10 +112,11 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
     _require_key(x_session_key)
     _require_token()
     body = body or SessionRequest()
-    symbol = _check_symbol(body.symbol) if body.symbol else None
+    symbol = None if not body.symbol else ("auto" if body.symbol == "auto" else _check_symbol(body.symbol))
     if body.account not in ("demo", "real"):
         raise HTTPException(400, "Account must be 'demo' or 'real'.")
-    return await _call(run_session(settings, symbol, body.max_trades, body.account))
+    return await _call(run_session(settings, symbol, body.max_trades, body.account,
+                                   body.stake, body.daily_loss_limit))
 
 
 @app.get("/api/cron")

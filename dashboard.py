@@ -43,6 +43,12 @@ button:disabled{opacity:.5;cursor:wait}
 .strip .fair{position:absolute;left:0;right:0;border-top:2px solid var(--fair)}
 .digits{display:grid;grid-template-columns:repeat(10,1fr);gap:3px;font-size:.75rem;color:var(--muted);text-align:center;margin-top:3px}
 .mkt.flag .b{background:var(--loss)}
+.strip .b.pick{background:var(--fair)}
+#auto-run.on{background:var(--ink);color:#fff}
+#auto-status{font-weight:500}
+.sub{margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)}
+.sub h3{font-size:1.05rem;margin:0 0 4px}
+input[type=number]{width:130px}
 .mode{display:inline-flex;border:1px solid var(--ink);border-radius:4px;overflow:hidden;margin-top:6px}
 .mode label{flex-direction:row;align-items:center;gap:0;color:var(--ink);font-size:.95rem}
 .mode input{position:absolute;opacity:0;min-width:0;width:1px;height:1px}
@@ -51,7 +57,7 @@ button:disabled{opacity:.5;cursor:wait}
 .mode input:focus-visible+span{outline:3px solid var(--fair);outline-offset:-3px}
 .mode input:disabled+span{opacity:.45;cursor:not-allowed}
 body.live .mode input:checked+span{background:var(--loss)}
-body.live #ss-run{background:var(--loss);border-color:var(--loss)}
+body.live #ss-run, body.live #auto-run.on{background:var(--loss);border-color:var(--loss)}
 .liveflag{display:none;margin-top:10px;padding:10px 12px;border-left:3px solid var(--loss);color:var(--loss);font-weight:500}
 body.live .liveflag{display:block}
 .verdict{margin-top:16px;padding-left:12px;border-left:3px solid var(--fair)}
@@ -111,10 +117,22 @@ th{font-weight:500;color:var(--muted)}
       <label>Session key<input id="key" type="password" autocomplete="off" placeholder="SESSION_KEY"></label>
       <label>Market<select id="ss-symbol"></select></label>
       <label>Trades this run<input id="ss-max" type="number" min="1" max="50" value="10"></label>
+      <label>Stake per trade ($)<input id="stake" type="number" min="0.35" max="5" step="0.01" value="0.50"></label>
+      <label>Daily loss limit ($)<input id="dloss" type="number" min="0.5" max="50" step="0.5" value="5"></label>
       <button id="ss-run">Start session</button>
+      <button id="auto-run" class="ghost">Start auto-trading</button>
       <button id="rs-run" class="ghost">Load results</button>
     </div>
+    <p class="hint" id="auto-hint">Market "Auto: best payout" picks the highest-paying market at the start of every run. Every market gives each digit the same 1-in-10 chance; a higher payout only means losing a little less. Auto-trading repeats runs until a limit is hit or you press Stop, and stops if you close this page.</p>
+    <div id="auto-status" class="msg" aria-live="polite"></div>
     <div id="ss-out"></div>
+
+    <div class="sub" aria-labelledby="h-prob">
+      <h3 id="h-prob">Match probability</h3>
+      <p class="hint">The digit the agent would bet on next for the selected market and stake, with the real odds and Deriv's current payout.</p>
+      <div class="row"><button id="pr-run" class="ghost">Check probability</button><button id="po-run" class="ghost">Compare market payouts</button></div>
+      <div id="pr-out"></div>
+    </div>
   </section>
 </main>
 <script>
@@ -128,6 +146,13 @@ const mname = s => MARKET_NAMES[s] || s;
 function el(tag, attrs={}, text){ const e=document.createElement(tag); Object.assign(e, attrs); if(text!==undefined) e.textContent=text; return e; }
 function message(box, text, err){ box.replaceChildren(el('p',{className:'msg'+(err?' err':'')}, text)); }
 try { $('key').value = sessionStorage.getItem('jda-key') || ''; } catch(e){}
+function tradeSettings(){
+  const st=$('stake'), dl=$('dloss'), stake=+st.value, dloss=+dl.value;
+  if(!(stake>=+st.min && stake<=+st.max)) throw new Error('Stake must be between $'+(+st.min).toFixed(2)+' and $'+(+st.max).toFixed(2)+'.');
+  if(!(dloss>0 && dloss<=+dl.max)) throw new Error('Daily loss limit must be above $0 and at most $'+(+dl.max).toFixed(2)+'.');
+  if(dloss<stake) throw new Error('Daily loss limit is smaller than one stake, so no trade could be placed.');
+  return {stake, daily_loss_limit:dloss};
+}
 const account = () => document.querySelector('input[name=acct]:checked').value;
 function setMode(v){
   document.querySelector('input[name=acct][value='+v+']').checked = true;
@@ -161,8 +186,15 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
   try{
     const h = await api('/api/health');
     for (const id of ['bt-symbol','ss-symbol']) h.all_symbols.forEach(s => $(id).append(el('option',{value:s, selected: s===h.symbols[0]}, mname(s))));
+    $('ss-symbol').prepend(el('option',{value:'auto'}, 'Auto: best payout'));
     $('ss-max').value = h.limits.trades_per_run;
-    if (!h.live_enabled) { $('acct-real').disabled = true; $('live-hint').textContent = 'Live is switched off on the server. To allow it, set LIVE_TRADING_CONFIRM in Vercel (see README) and redeploy.'; }
+    const stIn=$('stake'), dlIn=$('dloss');
+    stIn.min=h.min_stake; stIn.max=h.max_stake; dlIn.max=h.max_daily_loss_ceiling;
+    let saved={}; try{ saved=JSON.parse(localStorage.getItem('jda-settings')||'{}'); }catch(e){}
+    stIn.value=Number(saved.stake ?? h.stake).toFixed(2);
+    dlIn.value=saved.dloss ?? h.limits.max_daily_loss;
+    [stIn,dlIn].forEach(x=>x.addEventListener('change',()=>{ try{ localStorage.setItem('jda-settings', JSON.stringify({stake:+stIn.value, dloss:+dlIn.value})); }catch(e){} }));
+    if (!h.live_enabled) { $('acct-real').disabled = true; $('acct-real').dataset.locked='1'; $('live-hint').textContent = 'Live is switched off on the server. To allow it, set LIVE_TRADING_CONFIRM in Vercel (see README) and redeploy.'; }
     else { $('live-hint').textContent = 'Live is allowed on the server. Choose Live to trade with real money.'; }
     const st=$('status'); st.replaceChildren();
     const item=(label,val)=>{ const s=el('span'); s.append(el('b',{},label+': '), document.createTextNode(val)); st.append(s); };
@@ -217,15 +249,77 @@ function showResults(out, d){
   out.replaceChildren(...nodes);
 }
 
-$('ss-run').onclick = e => busy(e.target, async ()=>{
-  if (account()==='real' && !confirm('Place up to '+$('ss-max').value+' REAL-money trades of the configured stake now?')) return;
-  const out=$('ss-out'); message(out,'Trading. This takes up to a minute…');
+function sessionNodes(d){
+  const where = mname(d.symbol)+(d.auto_selected?' (auto: best payout)':'');
+  const nodes=[el('p',{className:'msg'}, (d.account.is_virtual?'Demo':'Real')+' account '+d.account.loginid+', '+where+'. Stopped because: '+d.stop_reason+'.')];
+  nodes.push(figures([['$'+d.stake.toFixed(2),'stake'],[String(d.run.trades),'trades this run'],[String(d.run.wins),'won'],[money(d.run.pnl),'this run ($)',cls(d.run.pnl)],[money(d.today.pnl),'today ($), limit -'+d.today.daily_loss_cap.toFixed(2),cls(d.today.pnl)],[d.account.balance.toFixed(2),'balance']]));
+  if(d.trades.length) nodes.push(table(['Contract','Market','Bet','Exit','Result','P&L ($)'], d.trades.map(t=>[String(t.contract_id), mname(t.symbol), t.predicted, t.exit_digit??'–', t.status, {text:money(t.profit), cls:cls(t.profit)}])));
+  d.errors.forEach(x=>nodes.push(el('p',{className:'msg err'}, x)));
+  return nodes;
+}
+function sessionBody(ts){ return JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account(), ...ts}); }
+
+let autoOn=false, autoTotals=null;
+function setAuto(on){
+  autoOn=on; const b=$('auto-run'); b.classList.toggle('on',on);
+  b.textContent = on ? 'Stop auto-trading' : 'Start auto-trading';
+  ['ss-run','rs-run','pr-run','po-run','ss-symbol','stake','dloss','ss-max'].forEach(id=>$(id).disabled=on);
+  document.querySelectorAll('input[name=acct]').forEach(r=>r.disabled = on || (r.value==='real' && r.dataset.locked==='1'));
+}
+$('auto-run').onclick = async ()=>{
+  if(autoOn){ autoOn=false; $('auto-status').textContent='Stopping after the current run finishes…'; return; }
+  let ts; try{ ts=tradeSettings(); }catch(err){ message($('ss-out'), err.message, true); return; }
+  if(account()==='real' && !confirm('Start LIVE auto-trading with real money?\n\nStake $'+ts.stake.toFixed(2)+', daily loss limit $'+ts.daily_loss_limit.toFixed(2)+'. Runs repeat until a limit is hit or you press Stop.')) return;
+  autoTotals={runs:0,trades:0,wins:0,pnl:0}; setAuto(true);
+  const status=$('auto-status');
   try{
-    const d = await api('/api/session',{method:'POST', body:JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account()})});
-    const nodes=[el('p',{className:'msg'}, (d.account.is_virtual?'Demo':'Real')+' account '+d.account.loginid+'. Stopped because: '+d.stop_reason+'.')];
-    nodes.push(figures([[String(d.run.trades),'trades this run'],[String(d.run.wins),'won'],[money(d.run.pnl),'this run ($)',cls(d.run.pnl)],[money(d.today.pnl),'today ($), cap -'+d.today.daily_loss_cap.toFixed(2),cls(d.today.pnl)],[d.account.balance.toFixed(2),'balance']]));
-    if(d.trades.length) nodes.push(table(['Contract','Market','Bet','Exit','Result','P&L ($)'], d.trades.map(t=>[String(t.contract_id), mname(t.symbol), t.predicted, t.exit_digit??'–', t.status, {text:money(t.profit), cls:cls(t.profit)}])));
-    d.errors.forEach(x=>nodes.push(el('p',{className:'msg err'}, x)));
+    while(autoOn){
+      status.textContent='Auto-trading: run '+(autoTotals.runs+1)+' in progress… ('+autoTotals.trades+' trades, '+money(autoTotals.pnl)+' so far)';
+      const d=await api('/api/session',{method:'POST', body:sessionBody(ts)});
+      autoTotals.runs++; autoTotals.trades+=d.run.trades; autoTotals.wins+=d.run.wins; autoTotals.pnl=Math.round((autoTotals.pnl+d.run.pnl)*100)/100;
+      $('ss-out').replaceChildren(...sessionNodes(d));
+      if(!d.can_continue || d.run.trades===0){ status.textContent='Auto-trading stopped: '+d.stop_reason+'.'; autoOn=false; break; }
+    }
+  }catch(err){ status.textContent='Auto-trading stopped by an error.'; message($('ss-out'), err.message, true); }
+  if(status.textContent.startsWith('Stopping') || status.textContent.startsWith('Auto-trading: run')) status.textContent='Auto-trading stopped by you.';
+  status.textContent += ' Totals: '+autoTotals.runs+' runs, '+autoTotals.trades+' trades, '+autoTotals.wins+' won, net P&L '+money(autoTotals.pnl)+'.';
+  setAuto(false);
+};
+
+$('po-run').onclick = e => busy(e.target, async ()=>{
+  const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');
+  try{
+    const d=await api('/api/payouts?stake='+tradeSettings().stake);
+    const rows=d.markets.map((m,i)=> m.payout ? [mname(m.symbol)+(i===0?' (best)':''), '$'+m.payout.toFixed(2), pct(m.breakeven_rate), {text:money(m.expected_per_trade), cls:cls(m.expected_per_trade)}] : [mname(m.symbol),'–','–','unavailable']);
+    out.replaceChildren(el('p',{className:'msg'},'Payouts for a $'+d.stake.toFixed(2)+' Matches bet. The chance of a match is 10% on every market.'), table(['Market','Payout','Break-even','Expected per trade ($)'], rows));
+  }catch(err){ message(out, err.message, true); }
+});
+
+$('ss-run').onclick = e => busy(e.target, async ()=>{
+  let ts; try{ ts=tradeSettings(); }catch(err){ message($('ss-out'), err.message, true); return; }
+  if (account()==='real' && !confirm('Place up to '+$('ss-max').value+' REAL-money trades of $'+ts.stake.toFixed(2)+' each now? Daily loss limit: $'+ts.daily_loss_limit.toFixed(2)+'.')) return;
+  const out=$('ss-out'); message(out,'Trading. This takes up to a minute…'); $('auto-status').textContent='';
+  try{ out.replaceChildren(...sessionNodes(await api('/api/session',{method:'POST', body:sessionBody(ts)}))); }
+  catch(err){ message(out, err.message, true); }
+});
+
+$('pr-run').onclick = e => busy(e.target, async ()=>{
+  const out=$('pr-out'); message(out,'Reading recent ticks and the live payout…');
+  try{
+    const stake=tradeSettings().stake; let sym=$('ss-symbol').value;
+    if(sym==='auto'){ const p=await api('/api/payouts?stake='+stake); sym=(p.markets.find(m=>m.payout)||{symbol:'R_100'}).symbol; }
+    const d=await api('/api/probability?symbol='+encodeURIComponent(sym)+'&stake='+stake);
+    const nodes=[el('p',{className:'msg'}, 'Next bet on '+mname(d.symbol)+': digit '+d.digit+' (strategy "'+d.strategy+'").')];
+    const f=[[pct(d.probability),'chance it matches'],[pct(d.recent_frequency),'how often '+d.digit+' came up in the last '+d.ticks+' ticks']];
+    if(d.payout){ f.push(['$'+d.payout.toFixed(2),'payout ($'+d.profit_if_win.toFixed(2)+' profit) on $'+d.stake.toFixed(2)],[pct(d.breakeven_rate),'needed to break even'],[money(d.expected_per_trade),'expected per trade ($)',cls(d.expected_per_trade)],[money(d.expected_per_100),'expected per 100 trades ($)',cls(d.expected_per_100)]); }
+    nodes.push(figures(f));
+    const max=Math.max(0.14,...d.frequencies);
+    const strip=el('div',{className:'strip',role:'img',ariaLabel:'Recent digit shares, digit '+d.digit+' highlighted'});
+    d.frequencies.forEach((x,i)=>strip.append(el('div',{className:'b'+(i===d.digit?' pick':''),style:'height:'+(x/max*100)+'%',title:i+': '+pct(x)})));
+    strip.append(el('div',{className:'fair',style:'bottom:'+(0.1/max*100)+'%'}));
+    const digits=el('div',{className:'digits'}); for(let i=0;i<10;i++) digits.append(el('span',{},i));
+    const wrap=el('div',{style:'max-width:360px;margin-top:12px'}); wrap.append(strip,digits); nodes.push(wrap);
+    nodes.push(el('p',{className:'verdict'}, 'Every tick, each digit has the same 1-in-10 chance, whatever came before. The recent share above is history, not a forecast.'+(d.payout?' At this payout each trade loses about $'+Math.abs(d.expected_per_trade).toFixed(2)+' on average.':' Payout unavailable right now.')));
     out.replaceChildren(...nodes);
   }catch(err){ message(out, err.message, true); }
 });

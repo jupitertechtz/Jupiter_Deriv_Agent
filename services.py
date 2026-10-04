@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from analyzer import STRATEGIES, DigitAnalyzer
 from config import LIVE_CONFIRM_PHRASE, Settings
-from deriv_client import DerivAPIError, DerivClient, last_digit
+from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError, DerivClient, last_digit
 from journal import stats_from_rows, verdict
 from risk import RiskManager
 from stats import chisquare_uniform
@@ -32,6 +32,73 @@ def _for_account(s: Settings, account_type: str | None) -> Settings:
         raise PermissionError("Live trading is switched off on the server. To allow it, set the Vercel environment "
                               "variable LIVE_TRADING_CONFIRM to the exact phrase in config.py and redeploy.")
     return dataclasses.replace(s, account_type=account_type)
+
+
+def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: float | None = None) -> Settings:
+    """Apply dashboard-chosen stake / daily loss limit, within the server's ceilings."""
+    changes = {}
+    if stake is not None:
+        stake = round(float(stake), 2)
+        if not s.min_stake <= stake <= s.max_stake:
+            raise ValueError(f"Stake must be between {s.min_stake:.2f} and {s.max_stake:.2f}.")
+        changes["stake"] = stake
+    if daily_loss_limit is not None:
+        daily_loss_limit = round(float(daily_loss_limit), 2)
+        if not 0 < daily_loss_limit <= s.max_daily_loss_ceiling:
+            raise ValueError(f"Daily loss limit must be above 0 and at most {s.max_daily_loss_ceiling:.2f}.")
+        changes["max_daily_loss"] = daily_loss_limit
+    return dataclasses.replace(s, **changes) if changes else s
+
+
+async def match_probability(s: Settings, symbol: str, stake: float | None = None) -> dict:
+    """What the agent would bet on right now, and the honest odds and payout for that bet."""
+    s = with_overrides(s, stake=stake)
+    token = s.api_token or None
+    async with DerivClient(s.app_id, token, s.api_base, s.account_type) as client:
+        digits, _ = await client.tick_history(symbol, s.window)
+        analyzer = DigitAnalyzer(s.window)
+        analyzer.extend(digits)
+        digit = STRATEGIES[s.strategy](analyzer)
+        payout = None
+        with contextlib.suppress(DerivAPIError):
+            payout = float((await client.matches_proposal(symbol, digit, s.stake, s.currency))["payout"])
+    freqs = analyzer.frequencies()
+    out = {
+        "symbol": symbol, "strategy": s.strategy, "digit": digit, "ticks": analyzer.n,
+        "frequencies": freqs, "recent_frequency": freqs[digit], "probability": 0.10,
+        "uniformity_p": analyzer.uniformity_p_value(), "stake": s.stake, "payout": payout,
+    }
+    if payout:
+        out.update({
+            "profit_if_win": round(payout - s.stake, 2),
+            "breakeven_rate": s.stake / payout,
+            "expected_per_trade": round(0.10 * payout - s.stake, 4),
+            "expected_per_100": round(100 * (0.10 * payout - s.stake), 2),
+        })
+    return out
+
+
+async def scan_payouts(client: DerivClient, s: Settings) -> list[dict]:
+    """Live Matches payout for every Volatility index at the current stake, best first.
+
+    Every digit has a 1-in-10 chance on every market; payout is the only real difference."""
+    async def one(sym):
+        try:
+            prop = await client.matches_proposal(sym, 5, s.stake, s.currency)
+            payout = float(prop["payout"])
+            return {"symbol": sym, "payout": payout, "breakeven_rate": s.stake / payout,
+                    "expected_per_trade": round(0.10 * payout - s.stake, 4)}
+        except DerivAPIError as exc:
+            return {"symbol": sym, "payout": None, "error": str(exc)}
+    rows = await asyncio.gather(*(one(sym) for sym in VOLATILITY_SYMBOLS))
+    return sorted(rows, key=lambda r: -(r["payout"] or 0))
+
+
+async def market_payouts(s: Settings, stake: float | None = None) -> dict:
+    s = with_overrides(s, stake=stake)
+    async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
+        rows = await scan_payouts(client, s)
+    return {"stake": s.stake, "markets": rows}
 
 
 def _account_info(acct: dict) -> dict:
@@ -77,9 +144,11 @@ async def account_results(s: Settings, limit: int = 500, account_type: str | Non
 
 
 async def run_session(s: Settings, symbol: str | None = None, max_trades: int | None = None,
-                      account_type: str | None = None) -> dict:
-    s = _for_account(s, account_type)
+                      account_type: str | None = None, stake: float | None = None,
+                      daily_loss_limit: float | None = None) -> dict:
+    s = with_overrides(_for_account(s, account_type), stake=stake, daily_loss_limit=daily_loss_limit)
     symbol = symbol or s.symbols[0]
+    auto = symbol == "auto"
     max_trades = max(1, min(max_trades or s.session_max_trades, 50))
     strategy = STRATEGIES[s.strategy]
     loop = asyncio.get_running_loop()
@@ -92,6 +161,14 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
             raise PermissionError("This token belongs to a REAL-money account. Sessions only run on the demo "
                                   "account unless LIVE_TRADING_CONFIRM is set to the exact phrase in config.py.")
         currency = info["currency"] or s.currency
+        s = dataclasses.replace(s, currency=currency)
+        scan = None
+        if symbol == "auto":
+            scan = await scan_payouts(client, s)
+            best = next((r for r in scan if r["payout"]), None)
+            if best is None:
+                raise ValueError("Could not get a payout for any market right now. Try again shortly.")
+            symbol = best["symbol"]
 
         # Rebuild today's risk state from Deriv, oldest first.
         risk = RiskManager(s)
@@ -162,7 +239,9 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
             info["balance"] = await client.balance()
 
     return {
-        "account": info, "symbol": symbol, "strategy": s.strategy, "stop_reason": stop_reason,
+        "account": info, "symbol": symbol, "auto_selected": auto, "market_scan": scan,
+        "strategy": s.strategy, "stake": s.stake, "stop_reason": stop_reason,
+        "can_continue": stop_reason.startswith("reached") or stop_reason.startswith("time budget"),
         "trades": trades, "errors": errors,
         "run": {"trades": len(trades), "wins": sum(t["profit"] > 0 for t in trades),
                 "pnl": round(sum(t["profit"] for t in trades), 2)},

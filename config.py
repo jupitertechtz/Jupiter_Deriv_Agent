@@ -45,6 +45,10 @@ class Settings:
     max_trades_per_session: int = field(default_factory=lambda: _i("MAX_TRADES_PER_SESSION", "100"))
     max_consecutive_losses: int = field(default_factory=lambda: _i("MAX_CONSECUTIVE_LOSSES", "25"))
     max_consecutive_errors: int = field(default_factory=lambda: _i("MAX_CONSECUTIVE_ERRORS", "5"))
+    # Ceilings for values set from the dashboard (the dashboard can never go above these)
+    min_stake: float = field(default_factory=lambda: _f("MIN_STAKE", "0.35"))
+    max_stake: float = field(default_factory=lambda: _f("MAX_STAKE", "5"))
+    max_daily_loss_ceiling: float = field(default_factory=lambda: _f("MAX_DAILY_LOSS_CEILING", "50"))
 
     # Safety + logging
     live_trading_confirm: str = field(default_factory=lambda: os.getenv("LIVE_TRADING_CONFIRM", ""))

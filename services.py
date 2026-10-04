@@ -34,8 +34,9 @@ def _for_account(s: Settings, account_type: str | None) -> Settings:
     return dataclasses.replace(s, account_type=account_type)
 
 
-def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: float | None = None) -> Settings:
-    """Apply dashboard-chosen stake / daily loss limit, within the server's ceilings."""
+def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: float | None = None,
+                   max_losses_in_row: int | None = None, max_trades_per_day: int | None = None) -> Settings:
+    """Apply dashboard-chosen limits, within the server's ceilings."""
     changes = {}
     if stake is not None:
         stake = round(float(stake), 2)
@@ -45,9 +46,32 @@ def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: fl
     if daily_loss_limit is not None:
         daily_loss_limit = round(float(daily_loss_limit), 2)
         if not 0 < daily_loss_limit <= s.max_daily_loss_ceiling:
-            raise ValueError(f"Daily loss limit must be above 0 and at most {s.max_daily_loss_ceiling:.2f}.")
+            raise ValueError(f"Daily loss limit must be above 0 and at most {s.max_daily_loss_ceiling:,.2f}.")
         changes["max_daily_loss"] = daily_loss_limit
+    if max_losses_in_row is not None:
+        if not 1 <= int(max_losses_in_row) <= s.max_losses_in_row_ceiling:
+            raise ValueError(f"Losses in a row must be between 1 and {s.max_losses_in_row_ceiling:,}.")
+        changes["max_consecutive_losses"] = int(max_losses_in_row)
+    if max_trades_per_day is not None:
+        if not 1 <= int(max_trades_per_day) <= s.max_trades_per_day_ceiling:
+            raise ValueError(f"Trades per day must be between 1 and {s.max_trades_per_day_ceiling:,}.")
+        changes["max_trades_per_session"] = int(max_trades_per_day)
     return dataclasses.replace(s, **changes) if changes else s
+
+
+def counting_start(count_since: int | None) -> int:
+    """Counters run from midnight UTC, or from a later reset the user made today."""
+    day = _start_of_utc_day()
+    return max(day, int(count_since)) if count_since else day
+
+
+def _losses_in_row(rows_newest_first) -> int:
+    n = 0
+    for r in rows_newest_first:
+        if r["profit"] > 0:
+            break
+        n += 1
+    return n
 
 
 async def match_probability(s: Settings, symbol: str, stake: float | None = None) -> dict:
@@ -126,7 +150,8 @@ async def analyze_markets(s: Settings, symbols: list[str], ticks: int) -> dict:
             "chance_of_false_alarm": 1 - 0.95 ** k}
 
 
-async def account_results(s: Settings, limit: int = 500, account_type: str | None = None) -> dict:
+async def account_results(s: Settings, limit: int = 500, account_type: str | None = None,
+                          count_since: int | None = None) -> dict:
     account_type = account_type or s.account_type
     if account_type not in ("demo", "real"):
         raise ValueError("Account must be 'demo' or 'real'.")
@@ -134,19 +159,24 @@ async def account_results(s: Settings, limit: int = 500, account_type: str | Non
     async with DerivClient(s.app_id, s.api_token, s.api_base, s.account_type) as client:
         account = _account_info(client.account)
         rows = await client.matches_history(limit=limit)
-        today = await client.matches_history(since_epoch=_start_of_utc_day(), limit=500)
+        since = counting_start(count_since)
+        today = await client.matches_history(since_epoch=since, limit=500)
     st = stats_from_rows(rows)
     if st["trades"]:
         st["verdict"] = verdict(st)
     return {"account": account, "stats": st,
-            "today": {"trades": len(today), "pnl": round(sum(r["profit"] for r in today), 2)},
+            "today": {"trades": len(today), "pnl": round(sum(r["profit"] for r in today), 2),
+                      "losses_in_row": _losses_in_row(today), "counting_since": since},
             "recent": rows[:50]}
 
 
 async def run_session(s: Settings, symbol: str | None = None, max_trades: int | None = None,
                       account_type: str | None = None, stake: float | None = None,
-                      daily_loss_limit: float | None = None) -> dict:
-    s = with_overrides(_for_account(s, account_type), stake=stake, daily_loss_limit=daily_loss_limit)
+                      daily_loss_limit: float | None = None, max_losses_in_row: int | None = None,
+                      max_trades_per_day: int | None = None, count_since: int | None = None) -> dict:
+    s = with_overrides(_for_account(s, account_type), stake=stake, daily_loss_limit=daily_loss_limit,
+                       max_losses_in_row=max_losses_in_row, max_trades_per_day=max_trades_per_day)
+    since = counting_start(count_since)
     symbol = symbol or s.symbols[0]
     auto = symbol == "auto"
     max_trades = max(1, min(max_trades or s.session_max_trades, 50))
@@ -172,7 +202,7 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
 
         # Rebuild today's risk state from Deriv, oldest first.
         risk = RiskManager(s)
-        for r in reversed(await client.matches_history(since_epoch=_start_of_utc_day())):
+        for r in reversed(await client.matches_history(since_epoch=since)):
             risk.record(r["profit"])
         trades_before = risk.session_trades
         risk.session_pnl, risk.session_wins = 0.0, 0
@@ -246,5 +276,7 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
         "run": {"trades": len(trades), "wins": sum(t["profit"] > 0 for t in trades),
                 "pnl": round(sum(t["profit"] for t in trades), 2)},
         "today": {"trades": trades_before + len(trades), "pnl": round(risk.daily_pnl, 2),
-                  "daily_loss_cap": s.max_daily_loss, "daily_trade_cap": s.max_trades_per_session},
+                  "daily_loss_cap": s.max_daily_loss, "daily_trade_cap": s.max_trades_per_session,
+                  "losses_in_row": risk.consecutive_losses, "losses_in_row_cap": s.max_consecutive_losses,
+                  "counting_since": since},
     }

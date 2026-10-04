@@ -46,6 +46,8 @@ button:disabled{opacity:.5;cursor:wait}
 .strip .b.pick{background:var(--fair)}
 #auto-run.on{background:var(--ink);color:#fff}
 #auto-status{font-weight:500}
+.counters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin:6px 0 10px;padding:10px 12px;border:1px solid var(--rule);border-radius:4px}
+.counters .hint{margin:0}
 .sub{margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)}
 .sub h3{font-size:1.05rem;margin:0 0 4px}
 input[type=number]{width:130px}
@@ -118,12 +120,18 @@ th{font-weight:500;color:var(--muted)}
       <label>Market<select id="ss-symbol"></select></label>
       <label>Trades this run<input id="ss-max" type="number" min="1" max="50" value="10"></label>
       <label>Stake per trade ($)<input id="stake" type="number" min="0.35" max="5" step="0.01" value="0.50"></label>
-      <label>Daily loss limit ($)<input id="dloss" type="number" min="0.5" max="50" step="0.5" value="5"></label>
+      <label>Daily loss limit ($)<input id="dloss" type="number" min="0.5" step="0.5" value="5"></label>
+      <label>Stop after losses in a row<input id="lrow" type="number" min="1" step="1" value="25"></label>
+      <label>Max trades per day<input id="tday" type="number" min="1" step="1" value="100"></label>
       <button id="ss-run">Start session</button>
       <button id="auto-run" class="ghost">Start auto-trading</button>
       <button id="rs-run" class="ghost">Load results</button>
     </div>
     <p class="hint" id="auto-hint">Market "Auto: best payout" picks the highest-paying market at the start of every run. Every market gives each digit the same 1-in-10 chance; a higher payout only means losing a little less. Auto-trading repeats runs until a limit is hit or you press Stop, and stops if you close this page.</p>
+    <div class="counters" aria-live="polite">
+      <div id="ctr-text" class="hint">Limit counters: run a session or load results to see them.</div>
+      <button id="ctr-reset" class="ghost">Reset counters</button>
+    </div>
     <div id="auto-status" class="msg" aria-live="polite"></div>
     <div id="ss-out"></div>
 
@@ -146,12 +154,28 @@ const mname = s => MARKET_NAMES[s] || s;
 function el(tag, attrs={}, text){ const e=document.createElement(tag); Object.assign(e, attrs); if(text!==undefined) e.textContent=text; return e; }
 function message(box, text, err){ box.replaceChildren(el('p',{className:'msg'+(err?' err':'')}, text)); }
 try { $('key').value = sessionStorage.getItem('jda-key') || ''; } catch(e){}
+const resetKey = () => 'jda-reset-'+account();
+function resetTime(){
+  let t=null; try{ t=+localStorage.getItem(resetKey())||null; }catch(e){}
+  const midnight=Math.floor(Date.UTC(new Date().getUTCFullYear(),new Date().getUTCMonth(),new Date().getUTCDate())/1000);
+  return t && t>midnight ? t : null;
+}
+const utcTime = t => new Date(t*1000).toISOString().slice(11,16)+' UTC';
+function showCounters(today, caps){
+  if(!today) return;
+  const from = resetTime() ? 'since your reset at '+utcTime(resetTime()) : 'since 00:00 UTC';
+  const lrCap = caps?.losses_in_row_cap ?? +$('lrow').value, tdCap = caps?.daily_trade_cap ?? +$('tday').value, dlCap = caps?.daily_loss_cap ?? +$('dloss').value;
+  $('ctr-text').textContent = (account()==='real'?'Live':'Demo')+' counters '+from+': P&L '+money(today.pnl)+' of -'+Number(dlCap).toFixed(2)+' limit, '+today.trades+' of '+tdCap+' trades, '+(today.losses_in_row??0)+' of '+lrCap+' losses in a row.';
+}
 function tradeSettings(){
   const st=$('stake'), dl=$('dloss'), stake=+st.value, dloss=+dl.value;
   if(!(stake>=+st.min && stake<=+st.max)) throw new Error('Stake must be between $'+(+st.min).toFixed(2)+' and $'+(+st.max).toFixed(2)+'.');
   if(!(dloss>0 && dloss<=+dl.max)) throw new Error('Daily loss limit must be above $0 and at most $'+(+dl.max).toFixed(2)+'.');
   if(dloss<stake) throw new Error('Daily loss limit is smaller than one stake, so no trade could be placed.');
-  return {stake, daily_loss_limit:dloss};
+  const lrow=+$('lrow').value, tday=+$('tday').value;
+  if(!(Number.isInteger(lrow) && lrow>=1 && lrow<=+$('lrow').max)) throw new Error('Losses in a row must be a whole number from 1 to '+(+$('lrow').max).toLocaleString()+'.');
+  if(!(Number.isInteger(tday) && tday>=1 && tday<=+$('tday').max)) throw new Error('Max trades per day must be a whole number from 1 to '+(+$('tday').max).toLocaleString()+'.');
+  return {stake, daily_loss_limit:dloss, max_losses_in_row:lrow, max_trades_per_day:tday, count_since:resetTime()};
 }
 const account = () => document.querySelector('input[name=acct]:checked').value;
 function setMode(v){
@@ -159,6 +183,7 @@ function setMode(v){
   document.body.classList.toggle('live', v==='real');
   $('ss-run').textContent = v==='real' ? 'Start LIVE session' : 'Start session';
   $('ss-out').replaceChildren();
+  $('ctr-text').textContent='Limit counters: run a session or load results to see them.';
 }
 document.querySelectorAll('input[name=acct]').forEach(r => r.addEventListener('change', e => {
   if (e.target.value==='real' && !confirm('Switch to LIVE trading?\n\nEvery trade will use real money. Matches pays below fair odds, so expect to lose over time. The daily loss cap still applies.')) { setMode('demo'); return; }
@@ -188,12 +213,14 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
     for (const id of ['bt-symbol','ss-symbol']) h.all_symbols.forEach(s => $(id).append(el('option',{value:s, selected: s===h.symbols[0]}, mname(s))));
     $('ss-symbol').prepend(el('option',{value:'auto'}, 'Auto: best payout'));
     $('ss-max').value = h.limits.trades_per_run;
-    const stIn=$('stake'), dlIn=$('dloss');
-    stIn.min=h.min_stake; stIn.max=h.max_stake; dlIn.max=h.max_daily_loss_ceiling;
+    const stIn=$('stake'), dlIn=$('dloss'), lrIn=$('lrow'), tdIn=$('tday');
+    stIn.min=h.min_stake; stIn.max=h.max_stake; dlIn.max=h.max_daily_loss_ceiling; lrIn.max=h.max_losses_in_row_ceiling; tdIn.max=h.max_trades_per_day_ceiling;
     let saved={}; try{ saved=JSON.parse(localStorage.getItem('jda-settings')||'{}'); }catch(e){}
     stIn.value=Number(saved.stake ?? h.stake).toFixed(2);
     dlIn.value=saved.dloss ?? h.limits.max_daily_loss;
-    [stIn,dlIn].forEach(x=>x.addEventListener('change',()=>{ try{ localStorage.setItem('jda-settings', JSON.stringify({stake:+stIn.value, dloss:+dlIn.value})); }catch(e){} }));
+    lrIn.value=saved.lrow ?? h.limits.max_consecutive_losses;
+    tdIn.value=saved.tday ?? h.limits.max_trades_per_day;
+    [stIn,dlIn,lrIn,tdIn].forEach(x=>x.addEventListener('change',()=>{ try{ localStorage.setItem('jda-settings', JSON.stringify({stake:+stIn.value, dloss:+dlIn.value, lrow:+lrIn.value, tday:+tdIn.value})); }catch(e){} }));
     if (!h.live_enabled) { $('acct-real').disabled = true; $('acct-real').dataset.locked='1'; $('live-hint').textContent = 'Live is switched off on the server. To allow it, set LIVE_TRADING_CONFIRM in Vercel (see README) and redeploy.'; }
     else { $('live-hint').textContent = 'Live is allowed on the server. Choose Live to trade with real money.'; }
     const st=$('status'); st.replaceChildren();
@@ -263,7 +290,7 @@ let autoOn=false, autoTotals=null;
 function setAuto(on){
   autoOn=on; const b=$('auto-run'); b.classList.toggle('on',on);
   b.textContent = on ? 'Stop auto-trading' : 'Start auto-trading';
-  ['ss-run','rs-run','pr-run','po-run','ss-symbol','stake','dloss','ss-max'].forEach(id=>$(id).disabled=on);
+  ['ss-run','rs-run','pr-run','po-run','ss-symbol','stake','dloss','lrow','tday','ss-max','ctr-reset'].forEach(id=>$(id).disabled=on);
   document.querySelectorAll('input[name=acct]').forEach(r=>r.disabled = on || (r.value==='real' && r.dataset.locked==='1'));
 }
 $('auto-run').onclick = async ()=>{
@@ -277,7 +304,7 @@ $('auto-run').onclick = async ()=>{
       status.textContent='Auto-trading: run '+(autoTotals.runs+1)+' in progress… ('+autoTotals.trades+' trades, '+money(autoTotals.pnl)+' so far)';
       const d=await api('/api/session',{method:'POST', body:sessionBody(ts)});
       autoTotals.runs++; autoTotals.trades+=d.run.trades; autoTotals.wins+=d.run.wins; autoTotals.pnl=Math.round((autoTotals.pnl+d.run.pnl)*100)/100;
-      $('ss-out').replaceChildren(...sessionNodes(d));
+      $('ss-out').replaceChildren(...sessionNodes(d)); showCounters(d.today, d.today);
       if(!d.can_continue || d.run.trades===0){ status.textContent='Auto-trading stopped: '+d.stop_reason+'.'; autoOn=false; break; }
     }
   }catch(err){ status.textContent='Auto-trading stopped by an error.'; message($('ss-out'), err.message, true); }
@@ -285,6 +312,15 @@ $('auto-run').onclick = async ()=>{
   status.textContent += ' Totals: '+autoTotals.runs+' runs, '+autoTotals.trades+' trades, '+autoTotals.wins+' won, net P&L '+money(autoTotals.pnl)+'.';
   setAuto(false);
 };
+
+$('ctr-reset').onclick = e => busy(e.target, async ()=>{
+  let cur=null;
+  try{ cur=await api('/api/results?account='+account()+(resetTime()?'&since='+resetTime():'')); }catch(err){}
+  const t=cur?.today, what = t ? 'Current counters: P&L '+money(t.pnl)+', '+t.trades+' trades, '+t.losses_in_row+' losses in a row.\n\n' : '';
+  if(!confirm('Reset the limit counters for the '+(account()==='real'?'LIVE':'demo')+' account?\n\n'+what+'Counting restarts from now, so the daily loss limit, trade limit and losses-in-a-row limit start again from zero. Your Deriv history and results are not changed. Counters also reset automatically at 00:00 UTC.')) return;
+  try{ localStorage.setItem(resetKey(), String(Math.floor(Date.now()/1000))); }catch(err){}
+  showCounters({pnl:0,trades:0,losses_in_row:0});
+});
 
 $('po-run').onclick = e => busy(e.target, async ()=>{
   const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');
@@ -299,7 +335,7 @@ $('ss-run').onclick = e => busy(e.target, async ()=>{
   let ts; try{ ts=tradeSettings(); }catch(err){ message($('ss-out'), err.message, true); return; }
   if (account()==='real' && !confirm('Place up to '+$('ss-max').value+' REAL-money trades of $'+ts.stake.toFixed(2)+' each now? Daily loss limit: $'+ts.daily_loss_limit.toFixed(2)+'.')) return;
   const out=$('ss-out'); message(out,'Trading. This takes up to a minute…'); $('auto-status').textContent='';
-  try{ out.replaceChildren(...sessionNodes(await api('/api/session',{method:'POST', body:sessionBody(ts)}))); }
+  try{ const d=await api('/api/session',{method:'POST', body:sessionBody(ts)}); out.replaceChildren(...sessionNodes(d)); showCounters(d.today, d.today); }
   catch(err){ message(out, err.message, true); }
 });
 
@@ -326,7 +362,7 @@ $('pr-run').onclick = e => busy(e.target, async ()=>{
 
 $('rs-run').onclick = e => busy(e.target, async ()=>{
   const out=$('ss-out'); message(out,'Loading your '+(account()==='real'?'live':'demo')+' Matches history from Deriv…');
-  try{ showResults(out, await api('/api/results?account='+account())); }catch(err){ message(out, err.message, true); }
+  try{ const r=await api('/api/results?account='+account()+(resetTime()?'&since='+resetTime():'')); showResults(out, r); showCounters(r.today); }catch(err){ message(out, err.message, true); }
 });
 </script>
 </body>

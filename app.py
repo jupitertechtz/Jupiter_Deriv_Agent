@@ -62,6 +62,7 @@ async def health():
         "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols), "all_symbols": VOLATILITY_SYMBOLS,
         "strategy": s.strategy, "strategies": list(STRATEGIES), "stake": s.stake,
         "min_stake": s.min_stake, "max_stake": s.max_stake, "max_daily_loss_ceiling": s.max_daily_loss_ceiling,
+        "max_losses_in_row_ceiling": s.max_losses_in_row_ceiling, "max_trades_per_day_ceiling": s.max_trades_per_day_ceiling,
         "limits": {"max_daily_loss": s.max_daily_loss, "max_trades_per_day": s.max_trades_per_session,
                    "max_consecutive_losses": s.max_consecutive_losses,
                    "trades_per_run": s.session_max_trades},
@@ -92,11 +93,11 @@ async def payouts(stake: float | None = None):
 
 
 @app.get("/api/results")
-async def results(account: str = Query("demo", pattern="^(demo|real)$"),
+async def results(account: str = Query("demo", pattern="^(demo|real)$"), since: int | None = None,
                   x_session_key: str | None = Header(None)):
     _require_key(x_session_key)
     _require_token()
-    return await _call(account_results(settings, account_type=account))
+    return await _call(account_results(settings, account_type=account, count_since=since))
 
 
 class SessionRequest(BaseModel):
@@ -105,6 +106,9 @@ class SessionRequest(BaseModel):
     account: str = "demo"   # "demo" or "real"
     stake: float | None = None
     daily_loss_limit: float | None = None
+    max_losses_in_row: int | None = None
+    max_trades_per_day: int | None = None
+    count_since: int | None = None   # epoch seconds of the user's last counter reset
 
 
 @app.post("/api/session")
@@ -116,7 +120,8 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
     if body.account not in ("demo", "real"):
         raise HTTPException(400, "Account must be 'demo' or 'real'.")
     return await _call(run_session(settings, symbol, body.max_trades, body.account,
-                                   body.stake, body.daily_loss_limit))
+                                   body.stake, body.daily_loss_limit, body.max_losses_in_row,
+                                   body.max_trades_per_day, body.count_since))
 
 
 @app.get("/api/cron")

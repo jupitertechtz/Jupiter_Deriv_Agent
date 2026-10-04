@@ -48,7 +48,9 @@ class Settings:
     # Ceilings for values set from the dashboard (the dashboard can never go above these)
     min_stake: float = field(default_factory=lambda: _f("MIN_STAKE", "0.35"))
     max_stake: float = field(default_factory=lambda: _f("MAX_STAKE", "5"))
-    max_daily_loss_ceiling: float = field(default_factory=lambda: _f("MAX_DAILY_LOSS_CEILING", "50"))
+    max_daily_loss_ceiling: float = field(default_factory=lambda: _f("MAX_DAILY_LOSS_CEILING", "100000"))
+    max_losses_in_row_ceiling: int = field(default_factory=lambda: _i("MAX_LOSSES_IN_ROW_CEILING", "100000"))
+    max_trades_per_day_ceiling: int = field(default_factory=lambda: _i("MAX_TRADES_PER_DAY_CEILING", "100000"))
 
     # Safety + logging
     live_trading_confirm: str = field(default_factory=lambda: os.getenv("LIVE_TRADING_CONFIRM", ""))

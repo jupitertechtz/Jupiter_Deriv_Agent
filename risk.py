@@ -33,7 +33,7 @@ class RiskManager:
             (s.session_take_profit > 0 and self.session_pnl >= s.session_take_profit,
              f"session take-profit reached ({self.session_pnl:+.2f})"),
             (self.session_trades >= s.max_trades_per_session,
-             f"max trades per session reached ({self.session_trades})"),
+             f"trade limit reached ({self.session_trades} trades)"),
             (self.consecutive_losses >= s.max_consecutive_losses,
              f"{self.consecutive_losses} losses in a row"),
             (self.consecutive_errors >= s.max_consecutive_errors,

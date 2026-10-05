@@ -263,7 +263,10 @@ class AdaptiveDigitEngine:
 def params_from_settings(s) -> EngineParams:
     return EngineParams(min_samples=s.adaptive_min_samples, max_p=s.adaptive_max_p, min_edge=s.adaptive_min_edge,
                         min_separation=s.adaptive_min_separation, max_entropy=s.adaptive_max_entropy,
-                        persistence=s.adaptive_persistence, eta=s.adaptive_eta)
+                        persistence=s.adaptive_persistence, eta=s.adaptive_eta,
+                        short_window=s.adaptive_short_window, long_window=s.adaptive_long_window,
+                        recency_lambda=s.adaptive_recency_lambda,
+                        ledger_size=max(2000, s.adaptive_min_samples))
 
 
 ADAPTIVE = "adaptive"

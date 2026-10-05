@@ -254,7 +254,11 @@ async def engine_scan(s: Settings, ticks: int | None = None, stake: float | None
                       group: str = "all") -> dict:
     """Engine evaluation for every digit market, ranked: MATCH first, then by score."""
     s = with_overrides(s, stake=stake)
-    ticks = ticks or s.adaptive_history
+    ticks = ticks or s.scan_ticks
+    if ticks - s.adaptive_short_window < s.adaptive_min_samples:
+        raise ValueError(f"Scans use {ticks} ticks per market, which gives at most {ticks - s.adaptive_short_window} "
+                         f"predictions; raise 'History per market in scans' or lower 'Walk-forward predictions "
+                         f"required' ({s.adaptive_min_samples}).")
     symbols = await digit_symbols(s, group)
     sem = asyncio.Semaphore(10)
 

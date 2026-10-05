@@ -7,7 +7,7 @@ Contracts:
 """
 import hmac
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 
@@ -18,17 +18,26 @@ from dashboard import DASHBOARD_HTML
 from deriv_client import DerivAPIError
 from direction import DIRECTION_STRATEGIES
 from markets import find, get_catalog
+import tuning
 from risefall import backtest_risefall, direction_report, run_risefall_session
 from services import (AUTO_GROUPS, DIGIT_STRATEGIES, SESSION_STRATEGIES, _for_account, account_results,
                       analyze_markets, counting_start, digit_symbols, engine_report, engine_scan, market_payouts,
                       match_probability, run_session, with_overrides)
 
 app = FastAPI(title="Jupiter Deriv Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")
-settings = Settings()
+BASE = Settings()
+
+
+def cfg(x_tuning: str | None = Header(None)) -> Settings:
+    """Settings for this request: Vercel environment defaults plus the dashboard's validated adjustments."""
+    try:
+        return tuning.apply(BASE, x_tuning)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"Settings: {exc}") from exc
 UNITS = "^(t|s|m|h)$"
 
 
-async def _digit_symbol(symbol: str) -> str:
+async def _digit_symbol(symbol: str, settings: Settings) -> str:
     cat = await get_catalog(settings)
     m = find(cat, symbol)
     if m is None or not m["digits"]:
@@ -38,6 +47,7 @@ async def _digit_symbol(symbol: str) -> str:
 
 
 def _require_key(key: str | None) -> None:
+    settings = BASE
     if not settings.session_key:
         raise HTTPException(503, "SESSION_KEY is not set in the Vercel project's environment variables.")
     if not key or not hmac.compare_digest(key, settings.session_key):
@@ -45,11 +55,11 @@ def _require_key(key: str | None) -> None:
 
 
 def _require_token() -> None:
-    if not settings.api_token:
+    if not BASE.api_token:
         raise HTTPException(503, "DERIV_API_TOKEN is not set in the Vercel project's environment variables.")
 
 
-def _stake(stake):
+def _stake(stake, settings: Settings):
     try:
         return with_overrides(settings, stake=stake)
     except ValueError as exc:
@@ -70,12 +80,12 @@ async def _call(coro):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(settings: Settings = Depends(cfg)):
     return DASHBOARD_HTML
 
 
 @app.get("/api/health")
-async def health():
+async def health(settings: Settings = Depends(cfg)):
     s = settings
     return {
         "token_configured": bool(s.api_token), "app_id_configured": bool(s.app_id),
@@ -95,8 +105,15 @@ async def health():
     }
 
 
+@app.get("/api/settings")
+async def settings_schema():
+    """Adjustable settings: label, help, allowed range, default (from the Vercel environment), and
+    whether lowering or raising the value loosens the evidence gate."""
+    return {"fields": tuning.schema(BASE)}
+
+
 @app.get("/api/markets")
-async def markets(refresh: bool = False):
+async def markets(refresh: bool = False, settings: Settings = Depends(cfg)):
     """Every market on this account with what it offers: Digit Matches and/or Rise/Fall (with durations)."""
     cat = await get_catalog(settings, refresh=refresh)
     return {"source": cat["source"], "built": cat["built"], "markets": cat["markets"]}
@@ -104,8 +121,9 @@ async def markets(refresh: bool = False):
 
 @app.get("/api/analyze")
 async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None = None,
-                  group: str = Query("all", pattern="^(all|volatility)$")):
-    syms = [await _digit_symbol(x.strip()) for x in symbols.split(",")] if symbols else \
+                  group: str = Query("all", pattern="^(all|volatility)$"),
+                  settings: Settings = Depends(cfg)):
+    syms = [await _digit_symbol(x.strip(), settings) for x in symbols.split(",")] if symbols else \
         await digit_symbols(settings, group)
     return await _call(analyze_markets(settings, syms, ticks))
 
@@ -114,58 +132,63 @@ async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None
 async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=20000),
                    strategies: str | None = None, stake: float | None = None,
                    contract: str = Query("matches", pattern="^(matches|risefall)$"),
-                   duration: int = Query(5, ge=1), unit: str = Query("t", pattern=UNITS)):
+                   duration: int = Query(5, ge=1), unit: str = Query("t", pattern=UNITS),
+                  settings: Settings = Depends(cfg)):
     """Backtest the one market you selected (Digit Matches or Rise/Fall)."""
-    s = _stake(stake)
+    s = _stake(stake, settings)
     if contract == "risefall":
         return await _call(backtest_risefall(s, symbol, duration, unit, ticks))
     names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
-    return await _call(run_backtest(s, await _digit_symbol(symbol), ticks, names))
+    return await _call(run_backtest(s, await _digit_symbol(symbol, settings), ticks, names))
 
 
 @app.get("/api/backtest/best-payout")
 async def backtest_best_payout(ticks: int = Query(5000, ge=1000, le=10000), strategies: str | None = None,
-                               stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$")):
+                               stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$"),
+                  settings: Settings = Depends(cfg)):
     """Digit Matches: find the highest-payout market(s) now and backtest every digit market at its own payout."""
-    s = _stake(stake)
+    s = _stake(stake, settings)
     names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
     ticks = min(ticks, 5000) if group == "all" else ticks
     return await _call(run_backtest_best_payout(s, ticks, names, await digit_symbols(s, group)))
 
 
 @app.get("/api/probability")
-async def probability(symbol: str = "R_100", stake: float | None = None):
-    return await _call(match_probability(settings, await _digit_symbol(symbol), stake))
+async def probability(symbol: str = "R_100", stake: float | None = None, settings: Settings = Depends(cfg)):
+    return await _call(match_probability(settings, await _digit_symbol(symbol, settings), stake))
 
 
 @app.get("/api/payouts")
-async def payouts(stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$")):
+async def payouts(stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$"),
+                  settings: Settings = Depends(cfg)):
     return await _call(market_payouts(settings, stake, group))
 
 
 @app.get("/api/engine")
-async def engine(symbol: str = "R_100", ticks: int | None = Query(None, ge=1500, le=10000), stake: float | None = None):
+async def engine(symbol: str = "R_100", ticks: int | None = Query(None, ge=1500, le=10000), stake: float | None = None, settings: Settings = Depends(cfg)):
     """Adaptive Digit Engine v2 walk-forward report for one digit market."""
-    return await _call(engine_report(settings, await _digit_symbol(symbol), ticks, stake))
+    return await _call(engine_report(settings, await _digit_symbol(symbol, settings), ticks, stake))
 
 
 @app.get("/api/engine/scan")
 async def engine_scan_all(ticks: int | None = Query(None, ge=1500, le=5000), stake: float | None = None,
-                          group: str = Query("all", pattern="^(all|volatility)$")):
+                          group: str = Query("all", pattern="^(all|volatility)$"),
+                  settings: Settings = Depends(cfg)):
     """Adaptive Digit Engine v2 decision for every digit market, MATCH first then by score."""
     return await _call(engine_scan(settings, ticks, stake, group))
 
 
 @app.get("/api/direction")
 async def direction(symbol: str, duration: int = Query(5, ge=1), unit: str = Query("t", pattern=UNITS),
-                    stake: float | None = None):
+                    stake: float | None = None, settings: Settings = Depends(cfg)):
     """Adaptive Direction Engine walk-forward report for Rise/Fall on one market."""
-    return await _call(direction_report(_stake(stake), symbol, duration, unit))
+    return await _call(direction_report(_stake(stake, settings), symbol, duration, unit))
 
 
 @app.get("/api/results")
 async def results(account: str = Query("demo", pattern="^(demo|real)$"), since: int | None = None,
-                  x_session_key: str | None = Header(None)):
+                  x_session_key: str | None = Header(None),
+                  settings: Settings = Depends(cfg)):
     _require_key(x_session_key)
     _require_token()
     return await _call(account_results(settings, account_type=account, count_since=since))
@@ -188,7 +211,7 @@ class SessionRequest(BaseModel):
 
 
 @app.post("/api/session")
-async def session(body: SessionRequest | None = None, x_session_key: str | None = Header(None)):
+async def session(body: SessionRequest | None = None, x_session_key: str | None = Header(None), settings: Settings = Depends(cfg)):
     _require_key(x_session_key)
     _require_token()
     body = body or SessionRequest()
@@ -213,14 +236,14 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
         raise HTTPException(400, "Contract must be 'matches' or 'risefall'.")
     symbol = None
     if body.symbol:
-        symbol = body.symbol if body.symbol in AUTO_GROUPS else await _digit_symbol(body.symbol)
+        symbol = body.symbol if body.symbol in AUTO_GROUPS else await _digit_symbol(body.symbol, settings)
     return await _call(run_session(settings, symbol, body.max_trades, body.account,
                                    body.stake, body.daily_loss_limit, body.max_losses_in_row,
                                    body.max_trades_per_day, body.count_since, last, body.strategy))
 
 
 @app.get("/api/cron")
-async def cron(authorization: str | None = Header(None)):
+async def cron(authorization: str | None = Header(None), settings: Settings = Depends(cfg)):
     """For a Vercel cron job: Vercel sends 'Authorization: Bearer <CRON_SECRET>'. Runs Digit Matches defaults."""
     if not settings.cron_secret:
         raise HTTPException(503, "CRON_SECRET is not set, so scheduled sessions are off.")

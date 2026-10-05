@@ -74,6 +74,10 @@ class Settings:
     adaptive_max_entropy: float = field(default_factory=lambda: _f("ADAPTIVE_MAX_ENTROPY", "0.99"))
     adaptive_persistence: int = field(default_factory=lambda: _i("ADAPTIVE_PERSISTENCE", "30"))
     adaptive_eta: float = field(default_factory=lambda: _f("ADAPTIVE_ETA", "0.1"))
+    adaptive_short_window: int = field(default_factory=lambda: _i("ADAPTIVE_SHORT_WINDOW", "100"))
+    adaptive_long_window: int = field(default_factory=lambda: _i("ADAPTIVE_LONG_WINDOW", "1000"))
+    adaptive_recency_lambda: float = field(default_factory=lambda: _f("ADAPTIVE_RECENCY_LAMBDA", "0.97"))
+    scan_ticks: int = field(default_factory=lambda: _i("SCAN_TICKS", "3000"))   # history per market in scans
 
     # Adaptive Direction Engine (Rise/Fall). Same idea, judged against a 50% coin flip.
     direction_history: int = field(default_factory=lambda: _i("DIRECTION_HISTORY", "4000"))

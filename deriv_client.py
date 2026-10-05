@@ -186,22 +186,31 @@ class DerivClient:
 
     # ---------- market data ----------
     async def tick_prices(self, symbol: str, count: int) -> tuple[list[int], list[float], int]:
-        """(epoch times, prices, pip size) for the most recent `count` ticks (pages 5000 at a time)."""
+        """(epoch times, prices, pip size) for the most recent `count` ticks.
+
+        Deriv may return fewer ticks per request than asked (the current API caps a page at
+        1,000), so keep requesting earlier pages until there is enough history or no more."""
         prices: list = []
         times: list = []
         end, pip = "latest", None
-        while len(prices) < count:
+        for _ in range(60):                                  # hard stop on pages
+            if len(prices) >= count:
+                break
             n = min(5000, count - len(prices))
             resp = await self.request({"ticks_history": symbol, "count": n, "end": end, "style": "ticks"})
             hist = resp["history"]
             pip = resp.get("pip_size", pip)
-            if not hist["prices"]:
-                break
-            prices = [float(p) for p in hist["prices"]] + prices
-            times = [int(t) for t in hist["times"]] + times
-            end = int(hist["times"][0]) - 1
-            if len(hist["prices"]) < n:
-                break
+            page_t = [int(t) for t in hist.get("times") or []]
+            page_p = [float(p) for p in hist.get("prices") or []]
+            if times:                                        # drop any overlap with what we already have
+                keep = [i for i, t in enumerate(page_t) if t < times[0]]
+                page_t, page_p = [page_t[i] for i in keep], [page_p[i] for i in keep]
+            if not page_p:
+                break                                        # no older ticks available
+            prices = page_p + prices
+            times = page_t + times
+            end = times[0] - 1
+        prices, times = prices[-count:], times[-count:]
         if pip is None:
             pip = _infer_pip_size(prices)
         self.pip_sizes[symbol] = int(pip)

@@ -53,6 +53,14 @@ td .mini{font:inherit;font-size:.85rem;font-weight:500;padding:4px 8px;margin-le
 .closed{color:var(--muted)}
 .dur{display:none}
 body.rf .dur{display:flex}
+.set-group{margin-top:18px}
+.set-group h3{font-size:1.05rem;margin:0 0 6px}
+.set-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px 20px}
+.set-field label{color:var(--ink);font-weight:500;font-size:.92rem}
+.set-field input{width:100%}
+.set-field .help{font-size:.82rem;color:var(--muted);margin-top:3px}
+.set-field.changed input{border-color:var(--fair);border-width:2px}
+.set-field .warn{font-size:.82rem;color:var(--loss);margin-top:3px}
 .counters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin:6px 0 10px;padding:10px 12px;border:1px solid var(--rule);border-radius:4px}
 .counters .hint{margin:0}
 .sub{margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)}
@@ -135,6 +143,17 @@ th{font-weight:500;color:var(--muted)}
       <button id="bt-best" class="ghost">Backtest best-payout market</button>
     </div>
     <div id="bt-out"></div>
+  </section>
+
+  <section aria-labelledby="h-settings">
+    <h2 id="h-settings">Settings</h2>
+    <p class="hint">Adjust how the engines, sessions and backtests behave. Changes are saved in this browser and sent with every request; the server checks every value against its allowed range. Defaults come from your Vercel environment variables. Stake, loss limits and Demo/Live are set in Trading session.</p>
+    <div id="set-status" class="msg" aria-live="polite"></div>
+    <div id="set-form"></div>
+    <div class="row">
+      <button id="set-save">Save settings</button>
+      <button id="set-reset" class="ghost">Reset all to defaults</button>
+    </div>
   </section>
 
   <section aria-labelledby="h-session">
@@ -298,10 +317,51 @@ document.querySelectorAll('input[name=acct]').forEach(r => r.addEventListener('c
   setMode(e.target.value);
 }));
 
+function savedTuning(){ try{ return JSON.parse(localStorage.getItem('jda-tuning')||'{}'); }catch(e){ return {}; } }
+let SETTINGS_FIELDS=[];
+function fieldWarn(f, v){
+  if(v===f.default || !f.loosens) return '';
+  const looser = f.loosens==='down' ? v < f.default : v > f.default;
+  return looser ? 'Looser than the default: the engine will trade on weaker evidence, which makes trading on noise more likely.' : '';
+}
+function settingsStatus(){
+  const n=Object.keys(savedTuning()).length;
+  $('set-status').textContent = n ? n+' setting'+(n>1?'s':'')+' changed from the defaults and active in this browser.' : 'Using the defaults from your Vercel environment.';
+  const tag=$('status-tuning'); if(tag) tag.textContent = n ? n+' changed' : 'defaults';
+}
+function renderSettings(){
+  const saved=savedTuning(), groups={};
+  SETTINGS_FIELDS.forEach(f=>(groups[f.group]=groups[f.group]||[]).push(f));
+  const wrap=[];
+  Object.entries(groups).forEach(([g,fs])=>{
+    const box=el('div',{className:'set-group'}); box.append(el('h3',{},g));
+    const grid=el('div',{className:'set-grid'});
+    fs.forEach(f=>{
+      const v = saved[f.key] ?? f.default;
+      const cell=el('div',{className:'set-field'+(saved[f.key]!==undefined?' changed':'')});
+      const id='set-'+f.key;
+      const lab=el('label',{htmlFor:id},f.label);
+      const inp=el('input',{id, type:'number', min:f.min, max:f.max, step:f.step, value:v});
+      inp.dataset.key=f.key;
+      const help=el('div',{className:'help'}, f.help+' Default '+f.default+'; allowed '+f.min+' to '+f.max+'.');
+      const warn=el('div',{className:'warn'}, fieldWarn(f, +v));
+      inp.addEventListener('input',()=>{ const x=+inp.value; warn.textContent=fieldWarn(f,x); cell.classList.toggle('changed', x!==f.default); });
+      cell.append(lab, inp, help, warn); grid.append(cell);
+    });
+    box.append(grid); wrap.push(box);
+  });
+  $('set-form').replaceChildren(...wrap);
+  settingsStatus();
+}
+async function loadSettings(){
+  try{ SETTINGS_FIELDS=(await api('/api/settings')).fields; renderSettings(); }
+  catch(err){ message($('set-form'), err.message, true); }
+}
 async function api(path, opts={}){
   const key = $('key').value.trim();
   try { sessionStorage.setItem('jda-key', key); } catch(e){}
-  const r = await fetch(path, {...opts, headers:{'Content-Type':'application/json','X-Session-Key':key, ...(opts.headers||{})}});
+  const tune = savedTuning(); const extra = Object.keys(tune).length ? {'X-Tuning': JSON.stringify(tune)} : {};
+  const r = await fetch(path, {...opts, headers:{'Content-Type':'application/json','X-Session-Key':key, ...extra, ...(opts.headers||{})}});
   const data = await r.json().catch(()=>({detail:'The server returned an unreadable response ('+r.status+').'}));
   if(!r.ok) throw new Error(typeof data.detail==='string' ? data.detail : 'Request failed ('+r.status+').');
   return data;
@@ -346,6 +406,8 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
     item('Strategy', h.strategy);
     item('Stake', '$'+h.stake.toFixed(2));
     item('Daily loss cap', '$'+h.limits.max_daily_loss.toFixed(2));
+    const ts=el('span'); ts.append(el('b',{},'Settings: '), el('span',{id:'status-tuning'},'')); st.append(ts);
+    await loadSettings();
   }catch(e){ $('status').textContent = e.message; }
 })();
 
@@ -527,7 +589,7 @@ let autoOn=false, autoTotals=null;
 function setAuto(on){
   autoOn=on; const b=$('auto-run'); b.classList.toggle('on',on);
   b.textContent = on ? 'Stop auto-trading' : 'Start auto-trading';
-  ['ss-run','rs-run','pr-run','po-run','ss-symbol','contract','dur','dur-unit','strategy','stake','dloss','lrow','tday','ss-max','ctr-reset'].forEach(id=>$(id).disabled=on);
+  ['ss-run','rs-run','pr-run','po-run','ss-symbol','contract','dur','dur-unit','strategy','stake','dloss','lrow','tday','ss-max','ctr-reset','set-save','set-reset'].forEach(id=>$(id).disabled=on);
   document.querySelectorAll('input[name=acct]').forEach(r=>r.disabled = on || (r.value==='real' && r.dataset.locked==='1'));
   if(!on) ['po-run'].forEach(id=>$(id).disabled = contract()==='risefall');
 }
@@ -561,6 +623,31 @@ $('ctr-reset').onclick = e => busy(e.target, async ()=>{
 });
 
 $('cat-refresh').onclick = e => busy(e.target, async ()=>{ message($('cat-out'),'Asking Deriv for every market and its contracts…'); await loadCatalog(true); applyContract(); });
+
+$('set-save').onclick = e => busy(e.target, async ()=>{
+  const out={}, errs=[];
+  $('set-form').querySelectorAll('input[data-key]').forEach(inp=>{
+    const f=SETTINGS_FIELDS.find(x=>x.key===inp.dataset.key), v=+inp.value;
+    if(inp.value==='' || Number.isNaN(v) || v<f.min || v>f.max) errs.push(f.label+' must be between '+f.min+' and '+f.max+'.');
+    else if(f.type==='int' && !Number.isInteger(v)) errs.push(f.label+' must be a whole number.');
+    else if(v!==f.default) out[f.key]=v;
+  });
+  if(errs.length){ $('set-status').textContent=errs[0]; $('set-status').className='msg err'; return; }
+  const prev=localStorage.getItem('jda-tuning');
+  try{ localStorage.setItem('jda-tuning', JSON.stringify(out)); }catch(err){}
+  try{ await api('/api/engine?symbol='+encodeURIComponent((CATALOG.find(m=>m.digits)||{symbol:'R_100'}).symbol)+'&ticks=1500'); }
+  catch(err){
+    if(err.message.startsWith('Settings:')){ try{ prev==null?localStorage.removeItem('jda-tuning'):localStorage.setItem('jda-tuning',prev); }catch(e){}
+      $('set-status').className='msg err'; $('set-status').textContent='Not saved. '+err.message; return; }
+  }
+  $('set-status').className='msg'; renderSettings();
+  $('set-status').textContent += ' Saved.';
+});
+$('set-reset').onclick = ()=>{
+  if(!confirm('Reset every setting to the defaults from your Vercel environment?')) return;
+  try{ localStorage.removeItem('jda-tuning'); }catch(e){}
+  $('set-status').className='msg'; renderSettings(); $('set-status').textContent += ' Reset done.';
+};
 
 $('po-run').onclick = e => busy(e.target, async ()=>{
   const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');

@@ -19,6 +19,13 @@ On developers.deriv.com, register a **PAT-type app** (gives the App ID) and crea
 | `python cli.py trade` | Runs the agent on the symbols/strategy in `.env`. |
 | `python cli.py summary` | Win rate, P&L, break-even rate and luck probability from `trades.csv`. |
 
+## Settings (dashboard)
+The **Settings** section adjusts 24 values: digit engine (history, predictions required, luck p, edge, separation, entropy, persistence, learning rate, windows, recency decay, scan history), direction engine (history, predictions required, luck p, distance from 50%, entropy, persistence), sessions (seconds per run, tick spacing, payout re-check frequency, max wait for contracts) and simple strategies/backtests (analysis window, backtest spacing).
+
+Changes are stored in the browser and sent as JSON in the `X-Tuning` header; the server validates every value against its allowed range (`tuning.py`, listed at `/api/settings`) and rejects impossible combinations (e.g. more predictions required than the history can produce). Defaults are the Vercel environment variables. Changes that loosen an evidence gate are flagged in the dashboard. The cron endpoint always uses the environment defaults.
+
+Note: Deriv's current API returns at most 1,000 ticks per history request; the client pages backwards until it has the history it needs.
+
 ## Markets and contracts
 The app lists every market on your Deriv account live (`/api/markets`, from `active_symbols` + `contracts_for`, cached 15 minutes) and shows what each offers:
 
@@ -74,4 +81,4 @@ docker run --env-file .env -v $PWD/trades.csv:/app/trades.csv deriv-matches-agen
 To surface results in the Signal Lab dashboard, have the FastAPI app read `trades.csv` (or swap `Journal` for a database writer).
 
 ## Files
-`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `markets.py` live market catalog · `risefall.py` Rise/Fall trading · `direction.py` direction engine · `engine.py` adaptive digit engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI
+`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `tuning.py` adjustable settings · `markets.py` live market catalog · `risefall.py` Rise/Fall trading · `direction.py` direction engine · `engine.py` adaptive digit engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI

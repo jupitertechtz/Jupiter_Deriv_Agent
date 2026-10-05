@@ -78,6 +78,7 @@ class Settings:
     adaptive_long_window: int = field(default_factory=lambda: _i("ADAPTIVE_LONG_WINDOW", "1000"))
     adaptive_recency_lambda: float = field(default_factory=lambda: _f("ADAPTIVE_RECENCY_LAMBDA", "0.97"))
     scan_ticks: int = field(default_factory=lambda: _i("SCAN_TICKS", "3000"))   # history per market in scans
+    adaptive_min_accuracy: float = field(default_factory=lambda: _f("ADAPTIVE_MIN_ACCURACY", "0"))  # 0 = break-even
 
     # Adaptive Direction Engine (Rise/Fall). Same idea, judged against a 50% coin flip.
     direction_history: int = field(default_factory=lambda: _i("DIRECTION_HISTORY", "4000"))
@@ -86,5 +87,6 @@ class Settings:
     direction_min_edge: float = field(default_factory=lambda: _f("DIRECTION_MIN_EDGE", "0.03"))
     direction_max_entropy: float = field(default_factory=lambda: _f("DIRECTION_MAX_ENTROPY", "0.995"))
     direction_persistence: int = field(default_factory=lambda: _i("DIRECTION_PERSISTENCE", "50"))
+    direction_min_accuracy: float = field(default_factory=lambda: _f("DIRECTION_MIN_ACCURACY", "0"))  # 0 = break-even
     # Rise/Fall contracts longer than this are bought and tracked instead of waited on in a web run
     max_wait_seconds: float = field(default_factory=lambda: _f("MAX_WAIT_SECONDS", "30"))

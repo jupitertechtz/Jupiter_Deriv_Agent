@@ -19,8 +19,15 @@ On developers.deriv.com, register a **PAT-type app** (gives the App ID) and crea
 | `python cli.py trade` | Runs the agent on the symbols/strategy in `.env`. |
 | `python cli.py summary` | Win rate, P&L, break-even rate and luck probability from `trades.csv`. |
 
+## Live balance and card layout
+The **Live balance** card polls `/api/live` (balance, open contracts, trades settled since the run started) every 3 seconds while a session or auto-trading runs and every 20 seconds otherwise, pausing while the tab is hidden. It charts the balance, marks the starting balance, and shows the change, stake at risk and settled P&L. A Vercel run only returns its own results when it ends, so the live view comes from these separate snapshots.
+
+Every card can be collapsed and moved up or down; the layout is saved in the browser.
+
 ## Settings (dashboard)
 The **Settings** section adjusts 24 values: digit engine (history, predictions required, luck p, edge, separation, entropy, persistence, learning rate, windows, recency decay, scan history), direction engine (history, predictions required, luck p, distance from 50%, entropy, persistence), sessions (seconds per run, tick spacing, payout re-check frequency, max wait for contracts) and simple strategies/backtests (analysis window, backtest spacing).
+
+**Adaptive trading level** (top of the Settings card) sets every evidence gate of both adaptive engines in one click: Strict (default), Moderate, Relaxed, Very relaxed. **Minimum walk-forward accuracy** (one per engine) replaces the break-even rate as the accuracy a trade needs; 0 means break-even. Measured on random data like Deriv's synthetic indices (100,000 ticks): Strict 0 trades; Moderate 62; Relaxed 7,721 Matches trades at 10.2% wins (−$193 at $0.50); Very relaxed 8,647 at 10.0% (−$279). On data with a real pattern every level traded and won about 33%.
 
 Changes are stored in the browser and sent as JSON in the `X-Tuning` header; the server validates every value against its allowed range (`tuning.py`, listed at `/api/settings`) and rejects impossible combinations (e.g. more predictions required than the history can produce). Defaults are the Vercel environment variables. Changes that loosen an evidence gate are flagged in the dashboard. The cron endpoint always uses the environment defaults.
 
@@ -81,4 +88,4 @@ docker run --env-file .env -v $PWD/trades.csv:/app/trades.csv deriv-matches-agen
 To surface results in the Signal Lab dashboard, have the FastAPI app read `trades.csv` (or swap `Journal` for a database writer).
 
 ## Files
-`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `tuning.py` adjustable settings · `markets.py` live market catalog · `risefall.py` Rise/Fall trading · `direction.py` direction engine · `engine.py` adaptive digit engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI
+`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `live.py` live balance snapshots · `tuning.py` adjustable settings · `markets.py` live market catalog · `risefall.py` Rise/Fall trading · `direction.py` direction engine · `engine.py` adaptive digit engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI

@@ -53,6 +53,15 @@ td .mini{font:inherit;font-size:.85rem;font-weight:500;padding:4px 8px;margin-le
 .closed{color:var(--muted)}
 .dur{display:none}
 body.rf .dur{display:flex}
+.levels{display:flex;flex-wrap:wrap;border:1px solid var(--ink);border-radius:4px;overflow:hidden;margin-top:8px;width:max-content;max-width:100%}
+.levels label{flex-direction:row;color:var(--ink);font-size:.95rem}
+.levels input{position:absolute;opacity:0;min-width:0;width:1px;height:1px}
+.levels span{display:block;padding:8px 14px;cursor:pointer;font-weight:700;border-right:1px solid var(--rule)}
+.levels label:last-child span{border-right:0}
+.levels input:checked+span{background:var(--ink);color:#fff}
+.levels input:focus-visible+span{outline:3px solid var(--fair);outline-offset:-3px}
+.level-box{margin-top:6px;padding:12px 14px;border:1px solid var(--rule);border-radius:4px}
+.level-box h3{font-size:1.05rem;margin:0 0 4px}
 .set-group{margin-top:18px}
 .set-group h3{font-size:1.05rem;margin:0 0 6px}
 .set-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px 20px}
@@ -61,6 +70,31 @@ body.rf .dur{display:flex}
 .set-field .help{font-size:.82rem;color:var(--muted);margin-top:3px}
 .set-field.changed input{border-color:var(--fair);border-width:2px}
 .set-field .warn{font-size:.82rem;color:var(--loss);margin-top:3px}
+.card-head{display:flex;align-items:center;gap:8px}
+.card-head h2{flex:1;margin:0}
+.card-toggle{all:unset;cursor:pointer;display:flex;align-items:center;gap:10px;width:100%;font:inherit;font-weight:700;font-size:1.35rem;color:var(--ink)}
+.card-toggle:focus-visible{outline:3px solid var(--fair);outline-offset:4px;border-radius:2px}
+.card-toggle .chev{display:inline-block;width:.6em;transition:transform .15s}
+.card-toggle[aria-expanded=false] .chev{transform:rotate(-90deg)}
+.card-move{font:inherit;font-size:.85rem;font-weight:700;padding:5px 9px;min-width:34px;background:#fff;color:var(--ink);border:1px solid var(--rule)}
+.card-move:disabled{opacity:.3;cursor:default}
+.card-body{margin-top:10px}
+section.collapsed{padding-bottom:16px;padding-top:16px}
+.live-top{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-top:4px}
+.live-bal{font-size:2.6rem;font-weight:800;letter-spacing:-.02em;line-height:1}
+.live-cur{font-size:1rem;color:var(--muted);font-weight:500}
+.live-chg{font-size:1.1rem;font-weight:700}
+.live-state{display:flex;align-items:center;gap:6px;font-size:.9rem;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--rule)}
+.dot.on{background:var(--win)} .dot.fast{background:var(--win);box-shadow:0 0 0 4px rgba(18,134,107,.2)} .dot.err{background:var(--loss)}
+.spark{width:100%;height:120px;margin-top:12px;display:block}
+.spark .ln{fill:none;stroke:var(--ink);stroke-width:2;vector-effect:non-scaling-stroke}
+.spark .base{stroke:var(--fair);stroke-width:1.5;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
+.spark .area{fill:var(--ink);opacity:.06}
+.spark-legend{display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted)}
+.switch{flex-direction:row!important;align-items:center;gap:8px!important;color:var(--ink)!important}
+.switch input{min-width:0;width:18px;height:18px}
+@media (prefers-reduced-motion:reduce){.card-toggle .chev{transition:none}}
 .counters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin:6px 0 10px;padding:10px 12px;border:1px solid var(--rule);border-radius:4px}
 .counters .hint{margin:0}
 .sub{margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)}
@@ -103,6 +137,25 @@ th{font-weight:500;color:var(--muted)}
     <p class="lede">Digit statistics, backtests and capped $0.50 Matches sessions for Deriv volatility indices. Every digit should land 10% of the time; the blue line marks that.</p>
     <div class="status" id="status">Checking server setup…</div>
   </header>
+
+  <section aria-labelledby="h-live">
+    <h2 id="h-live">Live balance</h2>
+    <p class="hint">Your Deriv balance, refreshed every 3 seconds while a session or auto-trading runs and every 20 seconds otherwise (paused while this tab is hidden). Shows the account selected in Trading session.</p>
+    <div class="live-top">
+      <div><span class="live-bal" id="lv-bal">–</span> <span class="live-cur" id="lv-cur"></span></div>
+      <div class="live-chg" id="lv-chg"></div>
+      <div class="live-state"><span class="dot" id="lv-dot"></span><span id="lv-state">Enter the session key to start</span></div>
+    </div>
+    <svg class="spark" id="lv-spark" viewBox="0 0 600 120" preserveAspectRatio="none" role="img" aria-label="Balance over time"></svg>
+    <div class="spark-legend"><span id="lv-from"></span><span id="lv-range"></span><span id="lv-to"></span></div>
+    <div id="lv-figs"></div>
+    <div id="lv-tables"></div>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="lv-on" checked> Live updates</label>
+      <button id="lv-reset" class="ghost">Restart change from now</button>
+      <button id="lv-now" class="ghost">Refresh now</button>
+    </div>
+  </section>
 
   <section aria-labelledby="h-catalog">
     <h2 id="h-catalog">All markets</h2>
@@ -148,6 +201,12 @@ th{font-weight:500;color:var(--muted)}
   <section aria-labelledby="h-settings">
     <h2 id="h-settings">Settings</h2>
     <p class="hint">Adjust how the engines, sessions and backtests behave. Changes are saved in this browser and sent with every request; the server checks every value against its allowed range. Defaults come from your Vercel environment variables. Stake, loss limits and Demo/Live are set in Trading session.</p>
+    <div class="level-box">
+      <h3 id="lvl-title">Adaptive trading level</h3>
+      <p class="hint" style="margin:0">How much evidence the adaptive engines need before they trade. One choice sets every evidence gate of both engines; fine-tune individual values below, including the minimum walk-forward accuracy.</p>
+      <div class="levels" role="radiogroup" aria-labelledby="lvl-title" id="lvl-group"></div>
+      <p class="msg" id="lvl-desc" style="margin-top:8px"></p>
+    </div>
     <div id="set-status" class="msg" aria-live="polite"></div>
     <div id="set-form"></div>
     <div class="row">
@@ -279,6 +338,7 @@ function useMarket(sym, kind){
   $('contract').value=kind; applyContract(); $('ss-symbol').value=sym; durHint();
   if(kind==='risefall'){ const m=CATALOG.find(x=>x.symbol===sym); const r=m&&m.risefall[0]; if(r){ $('dur').value=r.min[0]; $('dur-unit').value=r.min[1]; durHint(); } }
   $('contract').dispatchEvent(new Event('change')); $('ss-symbol').value=sym; durHint();
+  const sec=document.querySelector('main > section[data-card="h-session"]'); if(sec && sec.classList.contains('collapsed')){ setCollapsed(sec,false); saveCardPrefs(); }
   document.getElementById('h-session').scrollIntoView({behavior:'smooth'});
 }
 const resetKey = () => 'jda-reset-'+account();
@@ -319,15 +379,49 @@ document.querySelectorAll('input[name=acct]').forEach(r => r.addEventListener('c
 
 function savedTuning(){ try{ return JSON.parse(localStorage.getItem('jda-tuning')||'{}'); }catch(e){ return {}; } }
 let SETTINGS_FIELDS=[];
+const BREAKEVEN_HINT={adaptive_min_accuracy:0.107, direction_min_accuracy:0.515};
+let PRESETS={}, GATE_KEYS=[];
 function fieldWarn(f, v){
+  if(f.key in BREAKEVEN_HINT){
+    if(v>0 && v<BREAKEVEN_HINT[f.key]) return 'Below break-even (about '+(BREAKEVEN_HINT[f.key]*100).toFixed(1)+'%): even when the engine reaches this accuracy, trades lose money on average.';
+    return '';
+  }
   if(v===f.default || !f.loosens) return '';
   const looser = f.loosens==='down' ? v < f.default : v > f.default;
   return looser ? 'Looser than the default: the engine will trade on weaker evidence, which makes trading on noise more likely.' : '';
 }
+function currentLevel(values){
+  const gate=Object.fromEntries(GATE_KEYS.map(k=>[k, values[k]]).filter(([,v])=>v!==undefined));
+  for(const [key,p] of Object.entries(PRESETS)){
+    const want=p.values;
+    const def=Object.fromEntries(SETTINGS_FIELDS.map(f=>[f.key,f.default]));
+    if(GATE_KEYS.every(k=>{ const target = k in want ? want[k] : def[k]; const have = k in gate ? gate[k] : def[k]; return Math.abs(target-have)<1e-12; })) return key;
+  }
+  return 'custom';
+}
+function formValues(){ const o={}; $('set-form').querySelectorAll('input[data-key]').forEach(i=>o[i.dataset.key]=+i.value); return o; }
+function renderLevels(selected){
+  const opts=[...Object.entries(PRESETS).map(([k,p])=>[k,p.label]), ['custom','Custom']];
+  $('lvl-group').replaceChildren(...opts.map(([k,label])=>{
+    const lab=el('label'); const inp=el('input',{type:'radio',name:'level',value:k,checked:k===selected, disabled:k==='custom'});
+    inp.addEventListener('change',()=>applyLevel(k)); lab.append(inp, el('span',{},label)); return lab; }));
+  $('lvl-desc').textContent = selected==='custom' ? 'Custom: your own mix of gate values (see the Digit engine and Direction engine groups below).' : PRESETS[selected].description;
+}
+function applyLevel(key){
+  const p=PRESETS[key]; if(!p) return;
+  SETTINGS_FIELDS.filter(f=>GATE_KEYS.includes(f.key)).forEach(f=>{
+    const inp=$('set-'+f.key); if(!inp) return;
+    inp.value = f.key in p.values ? p.values[f.key] : f.default;
+    inp.dispatchEvent(new Event('input'));
+  });
+  renderLevels(key);
+  $('set-status').className='msg'; $('set-status').textContent='Level "'+p.label+'" filled in below. Press Save settings to apply it.';
+}
 function settingsStatus(){
   const n=Object.keys(savedTuning()).length;
   $('set-status').textContent = n ? n+' setting'+(n>1?'s':'')+' changed from the defaults and active in this browser.' : 'Using the defaults from your Vercel environment.';
-  const tag=$('status-tuning'); if(tag) tag.textContent = n ? n+' changed' : 'defaults';
+  const lvl=currentLevel(savedTuning()); const lname = lvl==='custom' ? 'Custom' : (PRESETS[lvl]||{}).label || 'Strict';
+  const tag=$('status-tuning'); if(tag) tag.textContent = lname + (n ? ' ('+n+' changed)' : '');
 }
 function renderSettings(){
   const saved=savedTuning(), groups={};
@@ -351,10 +445,14 @@ function renderSettings(){
     box.append(grid); wrap.push(box);
   });
   $('set-form').replaceChildren(...wrap);
+  $('set-form').querySelectorAll('input[data-key]').forEach(i=>{ if(GATE_KEYS.includes(i.dataset.key)) i.addEventListener('input',()=>{
+    const lvl=currentLevel(Object.fromEntries(Object.entries(formValues()).filter(([k,v])=>{ const f=SETTINGS_FIELDS.find(x=>x.key===k); return f && v!==f.default; })));
+    renderLevels(lvl); }); });
+  renderLevels(currentLevel(saved));
   settingsStatus();
 }
 async function loadSettings(){
-  try{ SETTINGS_FIELDS=(await api('/api/settings')).fields; renderSettings(); }
+  try{ const r=await api('/api/settings'); SETTINGS_FIELDS=r.fields; PRESETS=r.presets||{}; GATE_KEYS=r.gate_keys||[]; renderSettings(); }
   catch(err){ message($('set-form'), err.message, true); }
 }
 async function api(path, opts={}){
@@ -597,7 +695,7 @@ $('auto-run').onclick = async ()=>{
   if(autoOn){ autoOn=false; $('auto-status').textContent='Stopping after the current run finishes…'; return; }
   let ts; try{ ts=tradeSettings(); }catch(err){ message($('ss-out'), err.message, true); return; }
   if(account()==='real' && !confirm('Start LIVE auto-trading with real money?\n\nStake $'+ts.stake.toFixed(2)+', daily loss limit $'+ts.daily_loss_limit.toFixed(2)+'. Runs repeat until a limit is hit or you press Stop.')) return;
-  autoTotals={runs:0,trades:0,wins:0,pnl:0}; setAuto(true);
+  autoTotals={runs:0,trades:0,wins:0,pnl:0}; setAuto(true); liveFast(true);
   const status=$('auto-status');
   try{
     while(autoOn){
@@ -611,6 +709,7 @@ $('auto-run').onclick = async ()=>{
   if(status.textContent.startsWith('Stopping') || status.textContent.startsWith('Auto-trading: run')) status.textContent='Auto-trading stopped by you.';
   status.textContent += ' Totals: '+autoTotals.runs+' runs, '+autoTotals.trades+' trades, '+autoTotals.wins+' won, net P&L '+money(autoTotals.pnl)+'.';
   setAuto(false);
+  setTimeout(()=>{ LIVE.fast=false; liveSchedule(); livePoll(); }, 3000);
 };
 
 $('ctr-reset').onclick = e => busy(e.target, async ()=>{
@@ -633,6 +732,11 @@ $('set-save').onclick = e => busy(e.target, async ()=>{
     else if(v!==f.default) out[f.key]=v;
   });
   if(errs.length){ $('set-status').textContent=errs[0]; $('set-status').className='msg err'; return; }
+  const lvl=currentLevel(out);
+  if(['relaxed','very_relaxed'].includes(lvl) || lvl==='custom' && Object.keys(out).some(k=>GATE_KEYS.includes(k))){
+    const name = lvl==='custom' ? 'a custom, looser gate' : 'the "'+PRESETS[lvl].label+'" level';
+    if(!confirm('Save '+name+'?\n\nThe adaptive engines will trade on much weaker evidence. In testing on random data (like Deriv\'s synthetic indices), these extra trades won at about the chance rate and lost money overall. Run a backtest first to see the effect on your market.')) return;
+  }
   const prev=localStorage.getItem('jda-tuning');
   try{ localStorage.setItem('jda-tuning', JSON.stringify(out)); }catch(err){}
   try{ await api('/api/engine?symbol='+encodeURIComponent((CATALOG.find(m=>m.digits)||{symbol:'R_100'}).symbol)+'&ticks=1500'); }
@@ -649,6 +753,112 @@ $('set-reset').onclick = ()=>{
   $('set-status').className='msg'; renderSettings(); $('set-status').textContent += ' Reset done.';
 };
 
+// ---------- Live balance ----------
+const LIVE={timer:null, fast:false, busy:false, points:[], base:null, since:null, acct:null, fails:0};
+function liveReset(){ LIVE.points=[]; LIVE.base=null; LIVE.since=Math.floor(Date.now()/1000); }
+function drawSpark(){
+  const svg=$('lv-spark'), pts=LIVE.points;
+  if(pts.length<2){ svg.innerHTML=''; $('lv-from').textContent=''; $('lv-to').textContent=''; $('lv-range').textContent=pts.length?'Collecting data…':''; return; }
+  const vals=pts.map(p=>p.b).concat(LIVE.base!=null?[LIVE.base]:[]);
+  let lo=Math.min(...vals), hi=Math.max(...vals); if(hi-lo<0.01){ hi+=0.5; lo-=0.5; }
+  const t0=pts[0].t, t1=pts[pts.length-1].t, span=Math.max(1,t1-t0);
+  const X=t=>((t-t0)/span)*600, Y=b=>110-((b-lo)/(hi-lo))*100;
+  const line=pts.map(p=>X(p.t).toFixed(1)+','+Y(p.b).toFixed(1)).join(' ');
+  const area='0,120 '+line+' 600,120';
+  svg.innerHTML='<polygon class="area" points="'+area+'"/>'+(LIVE.base!=null?'<line class="base" x1="0" x2="600" y1="'+Y(LIVE.base).toFixed(1)+'" y2="'+Y(LIVE.base).toFixed(1)+'"/>':'')+'<polyline class="ln" points="'+line+'"/>';
+  const hm=t=>new Date(t*1000).toTimeString().slice(0,8);
+  $('lv-from').textContent=hm(t0); $('lv-to').textContent=hm(t1);
+  $('lv-range').textContent='low '+lo.toFixed(2)+'  ·  high '+hi.toFixed(2)+(LIVE.base!=null?'  ·  dashed line = start':'');
+}
+function liveState(text, cls){ $('lv-state').textContent=text; $('lv-dot').className='dot'+(cls?' '+cls:''); }
+async function livePoll(){
+  if(LIVE.busy || !$('lv-on').checked || document.hidden) return;
+  if(!$('key').value.trim()){ liveState('Enter the session key to start'); return; }
+  LIVE.busy=true;
+  try{
+    if(LIVE.acct!==account()){ LIVE.acct=account(); liveReset(); }
+    const d=await api('/api/live?account='+account()+'&since='+LIVE.since);
+    LIVE.fails=0;
+    if(LIVE.base==null) LIVE.base=d.balance;
+    LIVE.points.push({t:d.time,b:d.balance}); if(LIVE.points.length>400) LIVE.points.shift();
+    $('lv-bal').textContent=d.balance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    $('lv-cur').textContent=(d.account.currency||'')+' · '+(d.account.is_virtual?'Demo':'Real')+' '+d.account.loginid;
+    const chg=Math.round((d.balance-LIVE.base)*100)/100;
+    $('lv-chg').textContent=money(chg)+' since '+new Date(LIVE.since*1000).toTimeString().slice(0,5); $('lv-chg').className='live-chg '+cls(chg);
+    $('lv-figs').replaceChildren(figures([
+      [String(d.open.count),'open contracts'],['$'+d.open.stake.toFixed(2),'stake at risk'],
+      [String(d.settled.count),'settled since start'],[String(d.settled.wins),'won'],[money(d.settled.pnl),'settled P&L ($)',cls(d.settled.pnl)]]));
+    const nodes=[];
+    if(d.open.contracts.length) nodes.push(table(['Open contract','Market','Stake','Time left'], d.open.contracts.map(c=>[c.type, mname(c.symbol), c.stake.toFixed(2), c.seconds_left>=60? Math.floor(c.seconds_left/60)+'m '+(c.seconds_left%60)+'s' : c.seconds_left+'s'])));
+    if(d.settled.latest.length) nodes.push(table(['Settled','Market','Contract','Bet','P&L ($)'], d.settled.latest.map(r=>[new Date(r.time*1000).toTimeString().slice(0,8), mname(r.symbol), r.type, r.bet, {text:money(r.profit),cls:cls(r.profit)}])));
+    $('lv-tables').replaceChildren(...nodes);
+    drawSpark();
+    liveState((LIVE.fast?'Live, every 3 s (trading)':'Live, every 20 s')+' · updated '+new Date().toTimeString().slice(0,8), LIVE.fast?'fast':'on');
+  }catch(err){
+    LIVE.fails++; liveState('Update failed: '+err.message+(LIVE.fails>1?' (retrying)':''), 'err');
+  }finally{ LIVE.busy=false; }
+}
+function liveSchedule(){
+  clearInterval(LIVE.timer);
+  if(!$('lv-on').checked){ liveState('Paused'); return; }
+  LIVE.timer=setInterval(livePoll, LIVE.fast?3000:20000);
+}
+function liveFast(on){
+  if(on){ LIVE.points=[]; LIVE.base=null; LIVE.since=Math.floor(Date.now()/1000); }
+  LIVE.fast=on; liveSchedule(); livePoll();
+}
+liveReset();
+$('lv-on').addEventListener('change',()=>{ liveSchedule(); livePoll(); });
+$('lv-reset').onclick=()=>{ liveReset(); livePoll(); };
+$('lv-now').onclick=()=>livePoll();
+$('key').addEventListener('change',()=>livePoll());
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) livePoll(); });
+document.querySelectorAll('input[name=acct]').forEach(r=>r.addEventListener('change',()=>{ LIVE.acct=null; livePoll(); }));
+
+// ---------- Cards: collapse and reorder (saved in this browser) ----------
+function cardPrefs(){ try{ return JSON.parse(localStorage.getItem('jda-cards')||'{}'); }catch(e){ return {}; } }
+function saveCardPrefs(){
+  const main=document.querySelector('main');
+  const order=[...main.querySelectorAll(':scope > section')].map(x=>x.dataset.card);
+  const collapsed=[...main.querySelectorAll(':scope > section.collapsed')].map(x=>x.dataset.card);
+  try{ localStorage.setItem('jda-cards', JSON.stringify({order, collapsed})); }catch(e){}
+}
+function refreshMoveButtons(){
+  const secs=[...document.querySelectorAll('main > section')];
+  secs.forEach((sec,i)=>{ sec.querySelector('.card-up').disabled = i===0; sec.querySelector('.card-down').disabled = i===secs.length-1; });
+}
+function setCollapsed(sec, on){
+  sec.classList.toggle('collapsed', on);
+  sec.querySelector('.card-body').hidden = on;
+  sec.querySelector('.card-toggle').setAttribute('aria-expanded', String(!on));
+}
+function setupCards(){
+  const main=document.querySelector('main'), prefs=cardPrefs();
+  main.querySelectorAll(':scope > section').forEach(sec=>{
+    const id=sec.getAttribute('aria-labelledby'); sec.dataset.card=id;
+    const h2=sec.querySelector('h2'), title=h2.textContent;
+    const body=el('div',{className:'card-body', id:id+'-body'});
+    while(h2.nextSibling) body.append(h2.nextSibling);
+    const head=el('div',{className:'card-head'});
+    const btn=el('button',{className:'card-toggle', type:'button'});
+    btn.setAttribute('aria-expanded','true'); btn.setAttribute('aria-controls', body.id);
+    btn.append(el('span',{className:'chev'},'▾'), el('span',{},title));
+    h2.replaceChildren(btn);
+    const up=el('button',{className:'card-move card-up', type:'button', title:'Move up'},'↑'); up.setAttribute('aria-label','Move '+title+' up');
+    const down=el('button',{className:'card-move card-down', type:'button', title:'Move down'},'↓'); down.setAttribute('aria-label','Move '+title+' down');
+    head.append(h2, up, down);
+    sec.replaceChildren(head, body);
+    btn.onclick=()=>{ setCollapsed(sec, !sec.classList.contains('collapsed')); saveCardPrefs(); };
+    up.onclick=()=>{ const prev=sec.previousElementSibling; if(prev){ main.insertBefore(sec, prev); refreshMoveButtons(); saveCardPrefs(); up.disabled ? down.focus() : up.focus(); } };
+    down.onclick=()=>{ const next=sec.nextElementSibling; if(next){ main.insertBefore(next, sec); refreshMoveButtons(); saveCardPrefs(); down.disabled ? up.focus() : down.focus(); } };
+  });
+  (prefs.order||[]).forEach(id=>{ const sec=main.querySelector(':scope > section[data-card="'+id+'"]'); if(sec) main.append(sec); });
+  main.querySelectorAll(':scope > section').forEach(sec=>{ if(!(prefs.order||[]).includes(sec.dataset.card) && prefs.order) main.append(sec); });
+  (prefs.collapsed||[]).forEach(id=>{ const sec=main.querySelector(':scope > section[data-card="'+id+'"]'); if(sec) setCollapsed(sec, true); });
+  refreshMoveButtons();
+}
+setupCards();
+
 $('po-run').onclick = e => busy(e.target, async ()=>{
   const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');
   try{
@@ -662,9 +872,11 @@ $('po-run').onclick = e => busy(e.target, async ()=>{
 $('ss-run').onclick = e => busy(e.target, async ()=>{
   let ts; try{ ts=tradeSettings(); }catch(err){ message($('ss-out'), err.message, true); return; }
   if (account()==='real' && !confirm('Place up to '+$('ss-max').value+' REAL-money trades of $'+ts.stake.toFixed(2)+' each now? Daily loss limit: $'+ts.daily_loss_limit.toFixed(2)+'.')) return;
-  const out=$('ss-out'); message(out,'Trading. This takes up to a minute…'); $('auto-status').textContent='';
+  const out=$('ss-out'); message(out,'Trading. This takes up to a minute; watch Live balance for updates…'); $('auto-status').textContent='';
+  liveFast(true);
   try{ const d=await api('/api/session',{method:'POST', body:sessionBody(ts)}); out.replaceChildren(...sessionNodes(d)); showCounters(d.today, d.today); }
   catch(err){ message(out, err.message, true); }
+  finally{ setTimeout(()=>{ LIVE.fast=false; liveSchedule(); livePoll(); }, 3000); }
 });
 
 $('pr-run').onclick = e => busy(e.target, async ()=>{

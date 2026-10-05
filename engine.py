@@ -44,6 +44,7 @@ class EngineParams:
     min_separation: float = 0.005    # P(best) - P(second best)
     max_entropy: float = 0.99        # predictive entropy at/above this = uniform regime -> SKIP
     persistence: int = 30            # gate must pass on this many consecutive ticks before MATCH
+    min_accuracy: float = 0.0        # walk-forward accuracy required; 0 = the break-even rate
 
 
 class _Window:
@@ -215,19 +216,21 @@ class AdaptiveDigitEngine:
         calibration = max(0.0, 1 - abs(mean_pred - wf_acc) / mean_pred) if samples else 0.0
         reliability = wf_acc / BASELINE
         sample_conf = min(1.0, samples / self.p.min_samples)
-        regime_conf = min(1.0, max(0.0, (1 - h) / (1 - self.p.max_entropy)))
+        regime_conf = 1.0 if self.p.max_entropy >= 1 else min(1.0, max(0.0, (1 - h) / (1 - self.p.max_entropy)))
         score = p_best * reliability * calibration * sample_conf * regime_conf
 
         P = self.p
+        required = P.min_accuracy if P.min_accuracy > 0 else breakeven
         if h >= P.max_entropy:
             decision, gate = "SKIP", "uniform"
             reason = f"Next-digit forecast is near uniform (entropy {h:.3f} ≥ {P.max_entropy}): no usable structure."
         elif samples < P.min_samples:
             decision, gate = "WAIT", "samples"
             reason = f"Only {samples} walk-forward predictions; needs {P.min_samples}."
-        elif wf_acc <= breakeven:
+        elif wf_acc <= required:
             decision, gate = "WAIT", "below_breakeven"
-            reason = f"Walk-forward accuracy {wf_acc:.1%} is not above break-even {breakeven:.1%}."
+            reason = (f"Walk-forward accuracy {wf_acc:.1%} is not above the required {required:.1%}"
+                      + (f" (break-even {breakeven:.1%})." if P.min_accuracy else " (break-even)."))
         elif luck_p >= P.max_p:
             decision, gate = "WAIT", "not_significant"
             reason = f"Accuracy {wf_acc:.1%} could be luck (p = {luck_p:.3f}, needs < {P.max_p})."
@@ -240,7 +243,7 @@ class AdaptiveDigitEngine:
                       f"(walk-forward accuracy {wf_acc:.1%}, luck p = {luck_p:.4f}).")
         else:
             decision, gate = "MATCH", "passed"
-            reason = (f"Walk-forward accuracy {wf_acc:.1%} beats break-even {breakeven:.1%} over {samples} "
+            reason = (f"Walk-forward accuracy {wf_acc:.1%} beats the required {required:.1%} over {samples} "
                       f"predictions (luck p = {luck_p:.4f}), edge {edge:+.1%}, held for {self.streak} ticks.")
         if gate not in ("persistence", "passed"):
             self._gate_streak(False, breakeven)
@@ -252,7 +255,7 @@ class AdaptiveDigitEngine:
             "p_best": round(p_best, 4), "edge": round(edge, 4), "separation": round(separation, 4),
             "entropy": round(h, 4), "marginal_entropy": round(h_marginal, 4), "samples": samples, "walk_forward_accuracy": round(wf_acc, 4),
             "rolling_accuracy": {k: (round(v, 4) if v is not None else None) for k, v in acc.items()},
-            "luck_p": round(luck_p, 4), "breakeven": round(breakeven, 4),
+            "luck_p": round(luck_p, 4), "breakeven": round(breakeven, 4), "required_accuracy": round(required, 4),
             "calibration": round(calibration, 3), "reliability": round(reliability, 3),
             "sample_confidence": round(sample_conf, 3), "regime_confidence": round(regime_conf, 3),
             "score": round(score, 5), "weights": {m: round(w, 3) for m, w in self.weights.items()},
@@ -266,7 +269,7 @@ def params_from_settings(s) -> EngineParams:
                         persistence=s.adaptive_persistence, eta=s.adaptive_eta,
                         short_window=s.adaptive_short_window, long_window=s.adaptive_long_window,
                         recency_lambda=s.adaptive_recency_lambda,
-                        ledger_size=max(2000, s.adaptive_min_samples))
+                        ledger_size=max(2000, s.adaptive_min_samples), min_accuracy=s.adaptive_min_accuracy)
 
 
 ADAPTIVE = "adaptive"

@@ -38,6 +38,7 @@ class DirectionParams:
     min_edge: float = 0.03           # forecast must be at least this far from 50%
     max_entropy: float = 0.995       # binary forecast entropy at/above this -> SKIP (|p-0.5| < ~0.04)
     persistence: int = 50            # consecutive new resolved predictions the gate must hold for
+    min_accuracy: float = 0.0        # walk-forward accuracy required; 0 = the break-even rate
 
 
 def _binary_entropy(p: float) -> float:
@@ -191,17 +192,19 @@ class DirectionEngine:
         calibration = max(0.0, 1 - abs(mean_pred - acc) / mean_pred) if n else 0.0
         edge = p_dir - 0.5
         score = p_dir * (acc / 0.5) * calibration * min(1.0, n / P.min_samples) * \
-            min(1.0, max(0.0, (1 - h) / (1 - P.max_entropy)))
+            (1.0 if P.max_entropy >= 1 else min(1.0, max(0.0, (1 - h) / (1 - P.max_entropy))))
 
+        required = P.min_accuracy if P.min_accuracy > 0 else breakeven
         if h >= P.max_entropy:
             decision, gate = "SKIP", "uniform"
             reason = f"Forecast is close to 50/50 (P({direction.lower()}) = {p_dir:.1%}): no usable structure."
         elif n < P.min_samples:
             decision, gate = "WAIT", "samples"
             reason = f"Only {n} resolved walk-forward predictions; needs {P.min_samples}."
-        elif acc <= breakeven:
+        elif acc <= required:
             decision, gate = "WAIT", "below_breakeven"
-            reason = f"Walk-forward accuracy {acc:.1%} is not above break-even {breakeven:.1%}."
+            reason = (f"Walk-forward accuracy {acc:.1%} is not above the required {required:.1%}"
+                      + (f" (break-even {breakeven:.1%})." if P.min_accuracy else " (break-even)."))
         elif luck_p >= P.max_p:
             decision, gate = "WAIT", "not_significant"
             reason = f"Accuracy {acc:.1%} could be luck vs a coin flip (p = {luck_p:.3f}, needs < {P.max_p})."
@@ -213,7 +216,7 @@ class DirectionEngine:
             reason = f"Evidence has held for {self.streak} of {P.persistence} consecutive new predictions."
         else:
             decision, gate = "TRADE", "passed"
-            reason = (f"Walk-forward accuracy {acc:.1%} beats break-even {breakeven:.1%} over {n} predictions "
+            reason = (f"Walk-forward accuracy {acc:.1%} beats the required {required:.1%} over {n} predictions "
                       f"(luck p = {luck_p:.4f}); forecast {direction} at {p_dir:.1%}.")
         if gate not in ("persistence", "passed"):
             self._gate_streak(False, breakeven)
@@ -223,7 +226,8 @@ class DirectionEngine:
             "p_up": round(p_up, 4), "p_dir": round(p_dir, 4), "edge": round(edge, 4), "entropy": round(h, 4),
             "samples": n, "walk_forward_accuracy": round(acc, 4),
             "recent_accuracy": round(recent, 4) if recent is not None else None,
-            "luck_p": round(luck_p, 4), "breakeven": round(breakeven, 4), "calibration": round(calibration, 3),
+            "luck_p": round(luck_p, 4), "breakeven": round(breakeven, 4), "required_accuracy": round(required, 4),
+            "calibration": round(calibration, 3),
             "score": round(score, 5), "weights": {m: round(w, 3) for m, w in self.weights.items()},
             "ticks_seen": self.n, "gate_streak": self.streak, "persistence_required": P.persistence,
         }
@@ -298,4 +302,4 @@ def backtest_direction(times, prices, strategy: str, duration: int, unit: str, s
 def params_from_settings(s) -> DirectionParams:
     return DirectionParams(min_samples=s.direction_min_samples, max_p=s.direction_max_p,
                            min_edge=s.direction_min_edge, max_entropy=s.direction_max_entropy,
-                           persistence=s.direction_persistence)
+                           persistence=s.direction_persistence, min_accuracy=s.direction_min_accuracy)

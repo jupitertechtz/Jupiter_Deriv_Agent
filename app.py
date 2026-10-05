@@ -18,6 +18,7 @@ from dashboard import DASHBOARD_HTML
 from deriv_client import DerivAPIError
 from direction import DIRECTION_STRATEGIES
 from markets import find, get_catalog
+from live import live_snapshot
 import tuning
 from risefall import backtest_risefall, direction_report, run_risefall_session
 from services import (AUTO_GROUPS, DIGIT_STRATEGIES, SESSION_STRATEGIES, _for_account, account_results,
@@ -109,7 +110,7 @@ async def health(settings: Settings = Depends(cfg)):
 async def settings_schema():
     """Adjustable settings: label, help, allowed range, default (from the Vercel environment), and
     whether lowering or raising the value loosens the evidence gate."""
-    return {"fields": tuning.schema(BASE)}
+    return {"fields": tuning.schema(BASE), "presets": tuning.PRESETS, "gate_keys": list(tuning.GATE_KEYS)}
 
 
 @app.get("/api/markets")
@@ -183,6 +184,15 @@ async def direction(symbol: str, duration: int = Query(5, ge=1), unit: str = Que
                     stake: float | None = None, settings: Settings = Depends(cfg)):
     """Adaptive Direction Engine walk-forward report for Rise/Fall on one market."""
     return await _call(direction_report(_stake(stake, settings), symbol, duration, unit))
+
+
+@app.get("/api/live")
+async def live(account: str = Query("demo", pattern="^(demo|real)$"), since: int | None = None,
+               x_session_key: str | None = Header(None), settings: Settings = Depends(cfg)):
+    """Balance, open contracts and trades settled since `since` (epoch), for the live balance card."""
+    _require_key(x_session_key)
+    _require_token()
+    return await _call(live_snapshot(settings, account, since))
 
 
 @app.get("/api/results")

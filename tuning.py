@@ -19,8 +19,11 @@ FIELDS = {
     "adaptive_min_samples": ("Digit engine", "Walk-forward predictions required", int, 100, 10000, 100,
                              "How many scored predictions the engine needs before its accuracy is trusted. "
                              "Must be below history minus the short window.", "down"),
-    "adaptive_max_p": ("Digit engine", "Max luck probability (p)", float, 0.0001, 0.2, 0.001,
-                       "Accuracy must be this unlikely to come from pure luck. 0.01 = 1%.", "up"),
+    "adaptive_min_accuracy": ("Digit engine", "Minimum walk-forward accuracy (0 = break-even)", float, 0.0, 0.9, 0.001,
+                              "Accuracy the engine's past predictions must exceed before it trades. 0 uses the "
+                              "break-even rate for the current payout (about 10.7%). Chance alone gives 10%.", None),
+    "adaptive_max_p": ("Digit engine", "Max luck probability (p)", float, 0.0001, 1.0, 0.001,
+                       "Accuracy must be this unlikely to come from pure luck. 0.01 = 1%; 1 switches the test off.", "up"),
     "adaptive_min_edge": ("Digit engine", "Min edge over 10%", float, 0.0, 0.2, 0.005,
                           "How far the chosen digit's probability must exceed 10%.", "down"),
     "adaptive_min_separation": ("Digit engine", "Min lead over 2nd digit", float, 0.0, 0.1, 0.001,
@@ -45,8 +48,11 @@ FIELDS = {
                           "Fetched automatically higher for long durations.", None),
     "direction_min_samples": ("Direction engine", "Walk-forward predictions required", int, 50, 5000, 50,
                               "Non-overlapping scored predictions needed before accuracy is trusted.", "down"),
-    "direction_max_p": ("Direction engine", "Max luck probability (p)", float, 0.0001, 0.2, 0.001,
-                        "Accuracy must be this unlikely vs a 50% coin flip.", "up"),
+    "direction_min_accuracy": ("Direction engine", "Minimum walk-forward accuracy (0 = break-even)", float, 0.0, 0.95, 0.001,
+                               "Accuracy the engine's past predictions must exceed before it trades. 0 uses the "
+                               "break-even rate for the current payout (about 51.5%). A coin flip gives 50%.", None),
+    "direction_max_p": ("Direction engine", "Max luck probability (p)", float, 0.0001, 1.0, 0.001,
+                        "Accuracy must be this unlikely vs a 50% coin flip. 1 switches the test off.", "up"),
     "direction_min_edge": ("Direction engine", "Min distance from 50%", float, 0.0, 0.3, 0.005,
                            "How far the forecast must be from a coin flip.", "down"),
     "direction_max_entropy": ("Direction engine", "Max forecast entropy", float, 0.9, 1.0, 0.001,
@@ -67,6 +73,40 @@ FIELDS = {
                "Ticks the Coldest/Hottest strategies look back over.", None),
     "trade_every_n_ticks": ("Simple strategies & backtests", "Ticks between backtest trades", int, 1, 100, 1,
                             "Spacing between simulated trades in backtests.", None),
+}
+
+
+# One-click levels for the evidence gates of both adaptive engines. "strict" = the environment
+# defaults. Keys not listed in a level keep their current value.
+GATE_KEYS = ("adaptive_min_samples", "adaptive_max_p", "adaptive_min_edge", "adaptive_min_separation",
+             "adaptive_max_entropy", "adaptive_persistence", "adaptive_min_accuracy",
+             "direction_min_samples", "direction_max_p", "direction_min_edge", "direction_max_entropy",
+             "direction_persistence", "direction_min_accuracy")
+PRESETS = {
+    "strict": {"label": "Strict", "values": {},
+               "description": "Default. Trades only on strong, persistent, statistically significant evidence. "
+                              "On random markets it should almost never trade."},
+    "moderate": {"label": "Moderate", "values": {
+        "adaptive_min_samples": 500, "adaptive_max_p": 0.05, "adaptive_min_edge": 0.01, "adaptive_min_separation": 0.002,
+        "adaptive_max_entropy": 0.995, "adaptive_persistence": 10, "adaptive_min_accuracy": 0,
+        "direction_min_samples": 200, "direction_max_p": 0.05, "direction_min_edge": 0.02,
+        "direction_max_entropy": 0.998, "direction_persistence": 20, "direction_min_accuracy": 0},
+        "description": "Accepts weaker evidence (5% luck threshold, shorter persistence). Occasional trades on "
+                       "random markets."},
+    "relaxed": {"label": "Relaxed", "values": {
+        "adaptive_min_samples": 300, "adaptive_max_p": 0.2, "adaptive_min_edge": 0.005, "adaptive_min_separation": 0.0,
+        "adaptive_max_entropy": 0.999, "adaptive_persistence": 3, "adaptive_min_accuracy": 0,
+        "direction_min_samples": 100, "direction_max_p": 0.2, "direction_min_edge": 0.01,
+        "direction_max_entropy": 0.9995, "direction_persistence": 5, "direction_min_accuracy": 0},
+        "description": "Trades when recent accuracy is above break-even even if it could easily be luck. "
+                       "Expect regular trades on random markets, with results close to random."},
+    "very_relaxed": {"label": "Very relaxed", "values": {
+        "adaptive_min_samples": 200, "adaptive_max_p": 1.0, "adaptive_min_edge": 0.0, "adaptive_min_separation": 0.0,
+        "adaptive_max_entropy": 1.0, "adaptive_persistence": 1, "adaptive_min_accuracy": 0,
+        "direction_min_samples": 100, "direction_max_p": 1.0, "direction_min_edge": 0.0,
+        "direction_max_entropy": 1.0, "direction_persistence": 1, "direction_min_accuracy": 0},
+        "description": "Only the accuracy requirement remains: trades whenever past accuracy beats the minimum "
+                       "accuracy (break-even by default). Effectively trades the engine's top pick often."},
 }
 
 

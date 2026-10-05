@@ -12,6 +12,7 @@ from analyzer import STRATEGIES, DigitAnalyzer
 from engine import ADAPTIVE, AdaptiveDigitEngine, params_from_settings
 from config import LIVE_CONFIRM_PHRASE, Settings
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError, DerivClient, last_digit
+from markets import get_catalog
 from journal import stats_from_rows, verdict
 from risk import RiskManager
 from stats import chisquare_uniform
@@ -35,7 +36,8 @@ def _for_account(s: Settings, account_type: str | None) -> Settings:
     return dataclasses.replace(s, account_type=account_type)
 
 
-SESSION_STRATEGIES = (ADAPTIVE, *STRATEGIES)
+SESSION_STRATEGIES = (ADAPTIVE, *STRATEGIES, "momentum", "reversal")
+DIGIT_STRATEGIES = (ADAPTIVE, *STRATEGIES)
 
 
 def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: float | None = None,
@@ -122,7 +124,19 @@ async def match_probability(s: Settings, symbol: str, stake: float | None = None
     return out
 
 
-async def scan_payouts(client: DerivClient, s: Settings) -> list[dict]:
+AUTO_GROUPS = {"auto": "all", "auto:volatility": "volatility"}
+
+
+async def digit_symbols(s: Settings, group: str = "all") -> list[str]:
+    """Open markets offering Digit Matches, from the live catalog (Volatility indices if discovery fails)."""
+    cat = await get_catalog(s)
+    syms = [m["symbol"] for m in cat["markets"] if m["digits"] and m["open"]]
+    if group == "volatility":
+        syms = [x for x in syms if x in VOLATILITY_SYMBOLS] or list(VOLATILITY_SYMBOLS)
+    return syms or list(VOLATILITY_SYMBOLS)
+
+
+async def scan_payouts(client: DerivClient, s: Settings, symbols: list[str] | None = None) -> list[dict]:
     """Live Matches payout for every Volatility index at the current stake, best first.
 
     Every digit has a 1-in-10 chance on every market; payout is the only real difference."""
@@ -134,27 +148,35 @@ async def scan_payouts(client: DerivClient, s: Settings) -> list[dict]:
                     "expected_per_trade": round(0.10 * payout - s.stake, 4)}
         except DerivAPIError as exc:
             return {"symbol": sym, "payout": None, "error": str(exc)}
-    rows = await asyncio.gather(*(one(sym) for sym in VOLATILITY_SYMBOLS))
+    symbols = symbols or list(VOLATILITY_SYMBOLS)
+    sem = asyncio.Semaphore(10)
+
+    async def limited(sym):
+        async with sem:
+            return await one(sym)
+    rows = await asyncio.gather(*(limited(sym) for sym in symbols))
     return sorted(rows, key=lambda r: -(r["payout"] or 0))
 
 
-def pick_market(scan: list[dict], previous: str | None) -> str | None:
+def pick_market(scan: list[dict], previous: str | None, order: list[str] | None = None) -> str | None:
     """Highest payout wins. Markets tied at the top payout take turns, in list order."""
     paying = [r for r in scan if r.get("payout")]
     if not paying:
         return None
     top = max(r["payout"] for r in paying)
     tied = [r["symbol"] for r in paying if r["payout"] >= top - 0.005]
-    tied.sort(key=VOLATILITY_SYMBOLS.index)
+    order = order or [r["symbol"] for r in scan]
+    tied.sort(key=lambda x: order.index(x) if x in order else len(order))
     if previous in tied:
         return tied[(tied.index(previous) + 1) % len(tied)]
     return tied[0]
 
 
-async def market_payouts(s: Settings, stake: float | None = None) -> dict:
+async def market_payouts(s: Settings, stake: float | None = None, group: str = "all") -> dict:
     s = with_overrides(s, stake=stake)
+    symbols = await digit_symbols(s, group)
     async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
-        rows = await scan_payouts(client, s)
+        rows = await scan_payouts(client, s, symbols)
     paying = [r["payout"] for r in rows if r.get("payout")]
     top = max(paying) if paying else None
     for r in rows:
@@ -228,16 +250,23 @@ async def engine_report(s: Settings, symbol: str, ticks: int | None = None, stak
     return ev
 
 
-async def engine_scan(s: Settings, ticks: int | None = None, stake: float | None = None) -> dict:
-    """Engine evaluation for every market, ranked: MATCH first, then by score."""
+async def engine_scan(s: Settings, ticks: int | None = None, stake: float | None = None,
+                      group: str = "all") -> dict:
+    """Engine evaluation for every digit market, ranked: MATCH first, then by score."""
     s = with_overrides(s, stake=stake)
     ticks = ticks or s.adaptive_history
+    symbols = await digit_symbols(s, group)
+    sem = asyncio.Semaphore(10)
+
+    async def lim(coro):
+        async with sem:
+            return await coro
     async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
-        hist = await asyncio.gather(*(client.tick_history(sym, ticks) for sym in VOLATILITY_SYMBOLS))
-        pays = await asyncio.gather(*(_payout(client, s, sym) for sym in VOLATILITY_SYMBOLS))
+        hist = await asyncio.gather(*(lim(client.tick_history(sym, ticks)) for sym in symbols))
+        pays = await asyncio.gather(*(lim(_payout(client, s, sym)) for sym in symbols))
     order = {"MATCH": 0, "WAIT": 1, "SKIP": 2}
     rows = []
-    for sym, (digits, _), payout in zip(VOLATILITY_SYMBOLS, hist, pays):
+    for sym, (digits, _), payout in zip(symbols, hist, pays):
         be = s.stake / payout if payout else 0.10
         ev = AdaptiveDigitEngine(params_from_settings(s)).fit(digits, be).evaluate(be)
         ev.update({"symbol": sym, "payout": payout, "ticks": len(digits)})
@@ -247,7 +276,8 @@ async def engine_scan(s: Settings, ticks: int | None = None, stake: float | None
     return {"stake": s.stake, "markets": rows, "any_match": rows[0]["decision"] == "MATCH"}
 
 
-async def run_adaptive_session(s: Settings, symbol: str, auto: bool, max_trades: int, since: int) -> dict:
+async def run_adaptive_session(s: Settings, symbol: str, auto: bool, max_trades: int, since: int,
+                               auto_symbols: list[str] | None = None) -> dict:
     """Adaptive engine session: per-market engines learn from live ticks; trade only on MATCH."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + s.session_time_budget
@@ -266,7 +296,7 @@ async def run_adaptive_session(s: Settings, symbol: str, auto: bool, max_trades:
         trades_before = risk.session_trades
         risk.session_pnl, risk.session_wins = 0.0, 0
 
-        candidates = list(VOLATILITY_SYMBOLS) if auto else [symbol]
+        candidates = list(auto_symbols or VOLATILITY_SYMBOLS) if auto else [symbol]
         pays = dict(zip(candidates, await asyncio.gather(*(_payout(client, s, c) for c in candidates))))
         candidates = [c for c in candidates if pays[c]]
         if not candidates:
@@ -378,10 +408,13 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
                        strategy=strategy)
     since = counting_start(count_since)
     symbol = symbol or s.symbols[0]
-    auto = symbol == "auto"
+    if s.strategy not in DIGIT_STRATEGIES:
+        raise ValueError(f"For Digit Matches choose one of: {', '.join(DIGIT_STRATEGIES)}.")
+    auto = symbol in AUTO_GROUPS
+    auto_symbols = await digit_symbols(s, AUTO_GROUPS[symbol]) if auto else None
     max_trades = max(1, min(max_trades or s.session_max_trades, 50))
     if s.strategy == ADAPTIVE:
-        return await run_adaptive_session(s, symbol, auto, max_trades, since)
+        return await run_adaptive_session(s, symbol, auto, max_trades, since, auto_symbols)
     strategy = STRATEGIES[s.strategy]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + s.session_time_budget
@@ -433,8 +466,8 @@ async def run_session(s: Settings, symbol: str | None = None, max_trades: int | 
 
                 if auto:
                     if scan is None or attempts % max(1, s.auto_rescan_every) == 0:
-                        scan = await scan_payouts(client, s)
-                    chosen = pick_market(scan, current)
+                        scan = await scan_payouts(client, s, auto_symbols)
+                    chosen = pick_market(scan, current, auto_symbols)
                     if chosen is None:
                         stop_reason = "no market is offering a payout right now"
                         break

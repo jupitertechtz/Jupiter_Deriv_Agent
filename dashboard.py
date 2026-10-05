@@ -46,6 +46,13 @@ button:disabled{opacity:.5;cursor:wait}
 .strip .b.pick{background:var(--fair)}
 #auto-run.on{background:var(--ink);color:#fff}
 #auto-status{font-weight:500}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
+.chip{font:inherit;font-weight:500;padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:#fff;color:var(--ink);cursor:pointer}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+td .mini{font:inherit;font-size:.85rem;font-weight:500;padding:4px 8px;margin-left:4px}
+.closed{color:var(--muted)}
+.dur{display:none}
+body.rf .dur{display:flex}
 .counters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin:6px 0 10px;padding:10px 12px;border:1px solid var(--rule);border-radius:4px}
 .counters .hint{margin:0}
 .sub{margin-top:20px;padding-top:16px;border-top:1px solid var(--rule)}
@@ -63,7 +70,7 @@ body.live #ss-run, body.live #auto-run.on{background:var(--loss);border-color:va
 .liveflag{display:none;margin-top:10px;padding:10px 12px;border-left:3px solid var(--loss);color:var(--loss);font-weight:500}
 body.live .liveflag{display:block}
 .decision{display:inline-block;font-weight:800;letter-spacing:.04em;padding:4px 10px;border-radius:4px;border:2px solid currentColor;margin-right:10px}
-.decision.MATCH{color:var(--win)} .decision.WAIT{color:var(--ink)} .decision.SKIP{color:var(--muted)}
+.decision.MATCH,.decision.TRADE{color:var(--win)} .decision.WAIT{color:var(--ink)} .decision.SKIP{color:var(--muted)}
 .engine-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-top:8px}
 .verdict{margin-top:16px;padding-left:12px;border-left:3px solid var(--fair)}
@@ -89,8 +96,16 @@ th{font-weight:500;color:var(--muted)}
     <div class="status" id="status">Checking server setup…</div>
   </header>
 
+  <section aria-labelledby="h-catalog">
+    <h2 id="h-catalog">All markets</h2>
+    <p class="hint">Every market on your Deriv account and what it offers here. Digit Matches exists only on synthetic indices. Forex, commodities, stock indices and crypto (where Deriv offers options) trade as Rise/Fall, follow their exchange hours, and close at weekends.</p>
+    <div class="filters" id="cat-filters" role="group" aria-label="Filter by category"></div>
+    <div class="row"><button id="cat-refresh" class="ghost">Refresh list from Deriv</button></div>
+    <div id="cat-out"><p class="hint">Loading markets…</p></div>
+  </section>
+
   <section aria-labelledby="h-markets">
-    <h2 id="h-markets">Markets</h2>
+    <h2 id="h-markets">Digit statistics</h2>
     <p class="hint">Last-digit share per market. Red marks a market whose imbalance passes the corrected significance test; expect none, and re-check any that appear.</p>
     <div class="row">
       <label>Ticks per market<select id="an-ticks"><option>1000</option><option selected>2000</option><option>5000</option></select></label>
@@ -100,8 +115,8 @@ th{font-weight:500;color:var(--muted)}
   </section>
 
   <section aria-labelledby="h-engine">
-    <h2 id="h-engine">Adaptive Digit Engine</h2>
-    <p class="hint">Five models (short-term, long-term, recency-weighted, and 1st/2nd-order transitions) blended with weights that learn from every tick. Each prediction is made before the next digit is known and scored against the 10% baseline. The engine only says MATCH when its walk-forward accuracy beats break-even, could not plausibly be luck, and has held for many consecutive ticks; otherwise WAIT or SKIP.</p>
+    <h2 id="h-engine">Adaptive engine</h2>
+    <p class="hint" id="en-hint">Follows the contract chosen in Trading session. Digit Matches uses the Adaptive Digit Engine; Rise/Fall uses the Adaptive Direction Engine (momentum, reversal, recency and transition models, judged against a 50% coin flip at your contract's duration). Digit engine: five models (short-term, long-term, recency-weighted, and 1st/2nd-order transitions) blended with weights that learn from every tick. Each prediction is made before the next digit is known and scored against the 10% baseline. The engine only says MATCH when its walk-forward accuracy beats break-even, could not plausibly be luck, and has held for many consecutive ticks; otherwise WAIT or SKIP.</p>
     <div class="row">
       <label>Market<select id="en-symbol"></select></label>
       <button id="en-run">Analyze market</button>
@@ -133,7 +148,10 @@ th{font-weight:500;color:var(--muted)}
     <p class="liveflag">Live mode: trades use real money from your Deriv account.</p>
     <div class="row">
       <label>Session key<input id="key" type="password" autocomplete="off" placeholder="SESSION_KEY"></label>
+      <label>Contract<select id="contract"><option value="matches">Digit Matches</option><option value="risefall">Rise/Fall</option></select></label>
       <label>Market<select id="ss-symbol"></select></label>
+      <label class="dur">Duration<input id="dur" type="number" min="1" step="1" value="5"></label>
+      <label class="dur">Unit<select id="dur-unit"><option value="t">ticks</option><option value="s">seconds</option><option value="m">minutes</option><option value="h">hours</option></select></label>
       <label>Trades this run<input id="ss-max" type="number" min="1" max="50" value="10"></label>
       <label>Strategy<select id="strategy"></select></label>
       <label>Stake per trade ($)<input id="stake" type="number" min="0.35" max="5" step="0.01" value="0.50"></label>
@@ -144,6 +162,7 @@ th{font-weight:500;color:var(--muted)}
       <button id="auto-run" class="ghost">Start auto-trading</button>
       <button id="rs-run" class="ghost">Load results</button>
     </div>
+    <p class="hint dur" id="dur-hint" style="margin:0 0 8px"></p>
     <p class="hint" id="auto-hint">Market "Auto: best payout" re-checks every market&#39;s payout before each trade, trades the highest-paying one, and rotates between markets that tie for the best payout. Every market gives each digit the same 1-in-10 chance; a higher payout only means losing a little less. Auto-trading repeats runs until a limit is hit or you press Stop, and stops if you close this page.</p>
     <div class="counters" aria-live="polite">
       <div id="ctr-text" class="hint">Limit counters: run a session or load results to see them.</div>
@@ -167,14 +186,82 @@ const money = x => (x>0?'+':'') + x.toFixed(2);
 const cls = x => x>0 ? 'pos' : x<0 ? 'neg' : '';
 const MARKET_NAMES = {R_10:'Volatility 10 Index', R_25:'Volatility 25 Index', R_50:'Volatility 50 Index', R_75:'Volatility 75 Index', R_100:'Volatility 100 Index',
   '1HZ10V':'Volatility 10 (1s) Index', '1HZ25V':'Volatility 25 (1s) Index', '1HZ50V':'Volatility 50 (1s) Index', '1HZ75V':'Volatility 75 (1s) Index', '1HZ100V':'Volatility 100 (1s) Index'};
-const mname = s => MARKET_NAMES[s] || s;
-const STRAT_NAMES = {adaptive:'Adaptive engine (gated)', adaptive_ungated:'Adaptive engine (no gate)', coldest:'Coldest digit', hottest:'Hottest digit', repeat_last:'Repeat last digit', random:'Random (baseline)'};
+let CATALOG=[];
+const mname = s => (CATALOG.find(m=>m.symbol===s)||{}).name || MARKET_NAMES[s] || s;
+const contract = () => $('contract').value;
+const STRAT_NAMES = {adaptive:'Adaptive engine (gated)', adaptive_ungated:'Adaptive engine (no gate)', momentum:'Momentum', reversal:'Reversal', coldest:'Coldest digit', hottest:'Hottest digit', repeat_last:'Repeat last digit', random:'Random (baseline)'};
 const sname = s => STRAT_NAMES[s] || s;
 const GATE_NAMES = {uniform:'forecast near uniform', samples:'not enough walk-forward predictions', below_breakeven:'accuracy not above break-even', not_significant:'accuracy could be luck', small_edge:'edge too small', persistence:'evidence not yet persistent', passed:'passed', no_data:'no data'};
 const pct2 = x => x==null ? '–' : (x*100).toFixed(2)+'%';
 function el(tag, attrs={}, text){ const e=document.createElement(tag); Object.assign(e, attrs); if(text!==undefined) e.textContent=text; return e; }
 function message(box, text, err){ box.replaceChildren(el('p',{className:'msg'+(err?' err':'')}, text)); }
 try { $('key').value = sessionStorage.getItem('jda-key') || ''; } catch(e){}
+function fillMarkets(sel, kind, withAuto){
+  const keep=sel.value; sel.replaceChildren();
+  if(withAuto){
+    const g=el('optgroup',{label:'Automatic'});
+    if(kind==='matches'){ g.append(el('option',{value:'auto'},'Auto: best payout, all digit markets'), el('option',{value:'auto:volatility'},'Auto: best payout, Volatility indices')); }
+    else g.append(el('option',{value:'auto'},'Auto: best payout, all open markets'));
+    sel.append(g);
+  }
+  const groups={};
+  CATALOG.filter(m=> kind==='matches' ? m.digits : m.risefall.length).forEach(m=>{ (groups[m.category]=groups[m.category]||[]).push(m); });
+  Object.entries(groups).forEach(([cat,ms])=>{
+    const g=el('optgroup',{label:cat});
+    ms.forEach(m=>g.append(el('option',{value:m.symbol, disabled: kind==='risefall' && !m.open}, m.name+(m.open?'':' (closed)'))));
+    sel.append(g);
+  });
+  const opts=[...sel.options].map(o=>o.value);
+  const pref = opts.includes(keep) ? keep : (opts.includes('R_100') ? 'R_100' : ([...sel.options].find(o=>!o.disabled&&!o.value.startsWith('auto'))||sel.options[0]||{}).value);
+  if(pref) sel.value=pref;
+}
+function rangesText(m){ return m.risefall.map(r=>r.min[0]+r.min[1]+' to '+r.max[0]+r.max[1]).join('; '); }
+function durHint(){
+  if(contract()!=='risefall'){ $('dur-hint').textContent=''; return; }
+  const sym=$('ss-symbol').value, m=CATALOG.find(x=>x.symbol===sym);
+  const unitName={t:'ticks',s:'seconds',m:'minutes',h:'hours'};
+  const wait=(window.JDA_HEALTH||{}).max_wait_seconds||30;
+  $('dur-hint').textContent = (m ? m.name+' allows Rise/Fall durations of '+rangesText(m)+' (t = ticks). ' : 'Auto trades open markets that allow '+$('dur').value+' '+unitName[$('dur-unit').value]+'. ')
+    + 'Contracts longer than about '+wait+' seconds are bought and tracked: they settle on Deriv and count against your daily loss limit until they do.';
+}
+function applyContract(savedStrategy){
+  const rf=contract()==='risefall', h=window.JDA_HEALTH||{};
+  document.body.classList.toggle('rf', rf);
+  fillMarkets($('ss-symbol'), contract(), true);
+  fillMarkets($('en-symbol'), contract(), false);
+  fillMarkets($('bt-symbol'), contract(), false);
+  const list = rf ? (h.direction_strategies||['adaptive','momentum','reversal','random']) : (h.digit_strategies||h.strategies||['adaptive']);
+  const cur = savedStrategy || $('strategy').value;
+  $('strategy').replaceChildren(...list.map(x=>el('option',{value:x}, sname(x))));
+  $('strategy').value = list.includes(cur) ? cur : 'adaptive';
+  ['en-scan','bt-best','po-run'].forEach(id=>{ $(id).disabled = rf; $(id).title = rf ? 'Digit Matches only' : ''; });
+  $('pr-run').textContent = rf ? 'Check direction forecast' : 'Check probability';
+  durHint();
+}
+let catFilter='all';
+function renderCatalog(src){
+  const cats=['all',...new Set(CATALOG.map(m=>m.category))];
+  $('cat-filters').replaceChildren(...cats.map(c=>{ const b=el('button',{className:'chip',type:'button'}, c==='all'?'All ('+CATALOG.length+')':c+' ('+CATALOG.filter(m=>m.category===c).length+')'); b.setAttribute('aria-pressed', String(c===catFilter)); b.onclick=()=>{ catFilter=c; renderCatalog(src); }; return b; }));
+  const rows=CATALOG.filter(m=>catFilter==='all'||m.category===catFilter).map(m=>{
+    const act=el('td'); act.style.whiteSpace='nowrap';
+    if(m.digits){ const b=el('button',{className:'ghost mini',type:'button'},'Matches'); b.onclick=()=>useMarket(m.symbol,'matches'); act.append(b); }
+    if(m.risefall.length){ const b=el('button',{className:'ghost mini',type:'button',disabled:!m.open},'Rise/Fall'); b.onclick=()=>useMarket(m.symbol,'risefall'); act.append(b); }
+    return [m.name, m.category, {text:m.open?'Open':'Closed', cls:m.open?'':'closed'}, m.digits?'Yes':'–', m.risefall.length?rangesText(m):'–', act];
+  });
+  const t=table(['Market','Category','Status','Digit Matches','Rise/Fall durations','Use in session'], rows);
+  t.querySelectorAll('tbody tr').forEach((tr,i)=>{ const cell=rows[i][5]; tr.lastChild.replaceWith(cell); });
+  $('cat-out').replaceChildren(t, el('p',{className:'hint',style:'margin-top:8px'}, src.startsWith('live') ? 'Listed from Deriv for this account. Durations: t = ticks, s/m/h/d = seconds/minutes/hours/days.' : 'Could not list markets from Deriv ('+src+'); showing the Volatility indices only.'));
+}
+async function loadCatalog(refresh){
+  try{ const c=await api('/api/markets'+(refresh?'?refresh=true':'')); CATALOG=c.markets; renderCatalog(c.source); }
+  catch(err){ message($('cat-out'), err.message, true); }
+}
+function useMarket(sym, kind){
+  $('contract').value=kind; applyContract(); $('ss-symbol').value=sym; durHint();
+  if(kind==='risefall'){ const m=CATALOG.find(x=>x.symbol===sym); const r=m&&m.risefall[0]; if(r){ $('dur').value=r.min[0]; $('dur-unit').value=r.min[1]; durHint(); } }
+  $('contract').dispatchEvent(new Event('change')); $('ss-symbol').value=sym; durHint();
+  document.getElementById('h-session').scrollIntoView({behavior:'smooth'});
+}
 const resetKey = () => 'jda-reset-'+account();
 function resetTime(){
   let t=null; try{ t=+localStorage.getItem(resetKey())||null; }catch(e){}
@@ -231,10 +318,8 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
 (async function init(){
   try{
     const h = await api('/api/health');
-    for (const id of ['bt-symbol','ss-symbol']) h.all_symbols.forEach(s => $(id).append(el('option',{value:s, selected: s===h.symbols[0]}, mname(s))));
-    $('ss-symbol').prepend(el('option',{value:'auto'}, 'Auto: best payout'));
-    h.all_symbols.forEach(x => $('en-symbol').append(el('option',{value:x, selected: x===h.symbols[0]}, mname(x))));
-    h.strategies.forEach(x => $('strategy').append(el('option',{value:x}, sname(x))));
+    window.JDA_HEALTH = h;
+    await loadCatalog(false);
     $('ss-max').value = h.limits.trades_per_run;
     window.JDA_STRATEGY = h.strategy;
     const stIn=$('stake'), dlIn=$('dloss'), lrIn=$('lrow'), tdIn=$('tday');
@@ -244,8 +329,14 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
     dlIn.value=saved.dloss ?? h.limits.max_daily_loss;
     lrIn.value=saved.lrow ?? h.limits.max_consecutive_losses;
     tdIn.value=saved.tday ?? h.limits.max_trades_per_day;
-    $('strategy').value = saved.strategy && h.strategies.includes(saved.strategy) ? saved.strategy : 'adaptive';
-    [stIn,dlIn,lrIn,tdIn,$('strategy')].forEach(x=>x.addEventListener('change',()=>{ try{ localStorage.setItem('jda-settings', JSON.stringify({stake:+stIn.value, dloss:+dlIn.value, lrow:+lrIn.value, tday:+tdIn.value, strategy:$('strategy').value})); }catch(e){} }));
+    $('contract').value = saved.contract==='risefall' ? 'risefall' : 'matches';
+    $('dur').value = saved.dur || 5; $('dur-unit').value = saved.unit || 't';
+    applyContract(saved.strategy);
+    const save=()=>{ try{ localStorage.setItem('jda-settings', JSON.stringify({stake:+stIn.value, dloss:+dlIn.value, lrow:+lrIn.value, tday:+tdIn.value, strategy:$('strategy').value, contract:contract(), dur:+$('dur').value, unit:$('dur-unit').value})); }catch(e){} };
+    [stIn,dlIn,lrIn,tdIn,$('strategy'),$('contract'),$('dur'),$('dur-unit')].forEach(x=>x.addEventListener('change',save));
+    $('contract').addEventListener('change',()=>{ applyContract(); save(); });
+    $('ss-symbol').addEventListener('change',durHint);
+    [$('dur'),$('dur-unit')].forEach(x=>x.addEventListener('change',durHint));
     if (!h.live_enabled) { $('acct-real').disabled = true; $('acct-real').dataset.locked='1'; $('live-hint').textContent = 'Live is switched off on the server. To allow it, set LIVE_TRADING_CONFIRM in Vercel (see README) and redeploy.'; }
     else { $('live-hint').textContent = 'Live is allowed on the server. Choose Live to trade with real money.'; }
     const st=$('status'); st.replaceChildren();
@@ -259,7 +350,7 @@ function figures(items){ const f=el('div',{className:'figures'}); items.forEach(
 })();
 
 $('an-run').onclick = e => busy(e.target, async ()=>{
-  const out=$('an-out'); message(out,'Fetching tick history for 10 markets…');
+  const out=$('an-out'); message(out,'Fetching tick history for every digit market…');
   try{
     const d = await api('/api/analyze?ticks='+$('an-ticks').value);
     const grid=el('div',{className:'markets'});
@@ -292,8 +383,20 @@ function probStrip(probs, pick){
   const wrap=el('div',{style:'max-width:420px;margin-top:12px'}); wrap.append(strip,digits); return wrap;
 }
 
+async function directionPanel(out, sym){
+  const d=await api('/api/direction?symbol='+encodeURIComponent(sym)+'&duration='+$('dur').value+'&unit='+$('dur-unit').value+btStake());
+  const head=el('div',{className:'engine-head'}); head.append(decisionBadge(d.decision), el('span',{}, d.name+' ('+d.category+(d.open?'':', closed')+'): forecast '+d.direction+' over '+d.duration));
+  const nodes=[head, el('p',{className:'msg'}, d.reason)];
+  nodes.push(figures([[pct2(d.p_up),'model probability of Rise'],[pct2(d.p_dir),'probability of its forecast'],[(d.edge>=0?'+':'')+pct2(d.edge),'edge over 50%'],
+    [pct2(d.walk_forward_accuracy),'walk-forward accuracy'],[pct2(d.breakeven),'needed to break even'+(d.breakeven_known?'':' (payout unknown)')],
+    [d.luck_p.toFixed(3),'luck p vs a coin flip'],[String(d.samples),'non-overlapping predictions'],[d.calibration.toFixed(2),'calibration'],[d.score.toFixed(4),'decision score'],[String(d.ticks),'ticks replayed']]));
+  nodes.push(table(['Model','Weight'], Object.entries(d.weights).sort((a,b)=>b[1]-a[1]).map(([m,w])=>[m, pct(w)])));
+  nodes.push(el('p',{className:'verdict'}, 'Each prediction was made before its outcome and scored at the full contract duration; a tie counts as a loss, as on Deriv. Overlapping contracts are not double-counted.'));
+  out.replaceChildren(...nodes);
+}
 $('en-run').onclick = e => busy(e.target, async ()=>{
   const out=$('en-out'); message(out,'Replaying recent ticks through the engine, walk-forward…');
+  if(contract()==='risefall'){ try{ await directionPanel(out, $('en-symbol').value); }catch(err){ message(out, err.message, true); } return; }
   try{
     const d=await api('/api/engine?symbol='+$('en-symbol').value+btStake());
     const head=el('div',{className:'engine-head'}); head.append(decisionBadge(d.decision), el('span',{}, mname(d.symbol)+': next digit '+d.digit));
@@ -315,7 +418,7 @@ $('en-run').onclick = e => busy(e.target, async ()=>{
 });
 
 $('en-scan').onclick = e => busy(e.target, async ()=>{
-  const out=$('en-out'); message(out,'Running the engine on all ten markets. This can take up to a minute…');
+  const out=$('en-out'); message(out,'Running the engine on every digit market. This can take up to a minute…');
   try{
     const d=await api('/api/engine/scan'+(btStake()?'?'+btStake().slice(1):''));
     const counts={MATCH:0,WAIT:0,SKIP:0}; d.markets.forEach(m=>counts[m.decision]++);
@@ -329,7 +432,7 @@ $('en-scan').onclick = e => busy(e.target, async ()=>{
 $('bt-best').onclick = e => busy(e.target, async ()=>{
   const out=$('bt-out');
   const ticks=Math.min(+$('bt-ticks').value, 10000);
-  message(out,'Checking every market\'s payout and replaying '+ticks.toLocaleString()+' ticks on each. This can take up to a minute…');
+  message(out,'Checking every digit market\'s payout and replaying '+ticks.toLocaleString()+' ticks on each. This can take up to a minute…');
   try{
     const d = await api('/api/backtest/best-payout?ticks='+ticks+btStake());
     const best=d.markets.filter(m=>m.best), top=best[0];
@@ -356,6 +459,14 @@ $('bt-best').onclick = e => busy(e.target, async ()=>{
 $('bt-run').onclick = e => busy(e.target, async ()=>{
   const out=$('bt-out'); message(out,'Replaying ticks…');
   try{
+    if(contract()==='risefall'){
+      const r = await api('/api/backtest?contract=risefall&symbol='+encodeURIComponent($('bt-symbol').value)+'&ticks='+$('bt-ticks').value+'&duration='+$('dur').value+'&unit='+$('dur-unit').value+btStake());
+      out.replaceChildren(
+        el('p',{className:'msg'}, r.name+', Rise/Fall '+r.duration+': '+r.ticks.toLocaleString()+' ticks. A $'+r.stake.toFixed(2)+' stake pays $'+r.payout.toFixed(2)+', so breaking even needs '+pct(r.breakeven_rate)+' wins; a coin flip gives 50%.'),
+        table(['Strategy','Trades','Wins','Win rate','P&L ($)','Luck p'], strategyRows(r.results)),
+        el('p',{className:'hint',style:'margin-top:10px'}, 'One contract at a time, each entering on the tick after the decision and exiting at the full duration; ties count as losses. "Luck p" is the chance of doing this well by flipping a coin.'));
+      return;
+    }
     const d = await api('/api/backtest?symbol='+$('bt-symbol').value+'&ticks='+$('bt-ticks').value+btStake());
     const rows = strategyRows(d.results);
     out.replaceChildren(
@@ -368,14 +479,32 @@ $('bt-run').onclick = e => busy(e.target, async ()=>{
 function showResults(out, d){
   const s=d.stats, nodes=[];
   nodes.push(el('p',{className:'msg'}, (d.account.is_virtual?'Demo':'Real')+' account '+d.account.loginid+'. Balance '+d.account.balance.toFixed(2)+' '+(d.account.currency||'')+'.'));
-  if(!s.trades){ nodes.push(el('p',{className:'hint'},'No settled Matches trades yet. Start a session to place the first ones.')); out.replaceChildren(...nodes); return; }
+  if(!s.trades){ nodes.push(el('p',{className:'hint'},'No settled trades yet. Start a session to place the first ones. Rise/Fall contracts still running appear here once they settle on Deriv.')); out.replaceChildren(...nodes); return; }
   nodes.push(figures([[String(s.trades),'trades'],[pct(s.win_rate),'win rate'],[pct(s.breakeven_rate),'needed to break even'],[money(s.pnl),'net P&L ($)',cls(s.pnl)],[money(d.today.pnl),'today ($)',cls(d.today.pnl)]]));
-  nodes.push(el('p',{className:'verdict'}, s.verdict+' (luck p = '+s.luck_p.toFixed(3)+')'));
-  nodes.push(table(['Time (UTC)','Market','Digit','Stake','P&L ($)'], d.recent.slice(0,20).map(r=>[new Date(r.purchase_time*1000).toISOString().slice(5,19).replace('T',' '), mname(r.symbol), r.predicted, r.stake.toFixed(2), {text:money(r.profit), cls:cls(r.profit)}])));
+  nodes.push(el('p',{className:'verdict'}, s.verdict+' (luck p = '+s.luck_p.toFixed(3)+', measured against a 10% chance; for Rise/Fall trades the fair chance is 50%, so judge those by win rate vs break-even).'));
+  nodes.push(table(['Time (UTC)','Market','Contract','Bet','Stake','P&L ($)'], d.recent.slice(0,20).map(r=>[new Date(r.purchase_time*1000).toISOString().slice(5,19).replace('T',' '), mname(r.symbol), r.contract_type==='DIGITMATCH'?'Matches':'Rise/Fall', r.predicted, r.stake.toFixed(2), {text:money(r.profit), cls:cls(r.profit)}])));
   out.replaceChildren(...nodes);
 }
 
+function sessionNodesRF(d){
+  if(d.auto_selected && d.symbol) lastAutoSymbol=d.symbol;
+  const nm = x => (d.names&&d.names[x]) || mname(x);
+  const used=Object.entries(d.markets_used||{});
+  const where = d.auto_selected ? (used.length ? 'auto: best payout, traded on '+used.map(([m,n])=>nm(m)+' ('+n+')').join(', ') : 'auto: best payout') : nm(d.symbol);
+  const nodes=[el('p',{className:'msg'}, (d.account.is_virtual?'Demo':'Real')+' account '+d.account.loginid+', Rise/Fall '+d.duration+', '+where+'. Stopped because: '+d.stop_reason+'.')];
+  nodes.push(figures([['$'+d.stake.toFixed(2),'stake'],[String(d.run.trades),'trades this run'],[String(d.run.settled),'settled'],[String(d.run.wins),'won'],[money(d.run.pnl),'settled P&L ($)',cls(d.run.pnl)],['$'+d.open_exposure.toFixed(2),'still open'],[money(d.today.pnl),'today ($), limit -'+d.today.daily_loss_cap.toFixed(2),cls(d.today.pnl)],[d.account.balance.toFixed(2),'balance']]));
+  if(d.trades.length) nodes.push(table(['Contract','Market','Direction','Duration','Result','P&L ($)'], d.trades.map(t=>[t.contract_id?String(t.contract_id):'–', nm(t.symbol), t.direction, t.duration, t.status==='open'?'open, settles on Deriv':t.status, t.profit==null?'–':{text:money(t.profit), cls:cls(t.profit)}])));
+  if(d.engine){
+    const sk=Object.entries(d.engine.skipped_because||{}).sort((a,b)=>b[1]-a[1]).map(([g,n])=>GATE_NAMES[g]+' ('+n+')').join(', ');
+    nodes.push(el('p',{className:'verdict'}, 'Direction engine checked '+d.engine.checks+' times'+(d.run.trades? ' and traded only when a market passed the evidence gate.' : ' and found no market that passed the evidence gate.')+(sk?' Held back because: '+sk+'.':'')));
+    nodes.push(table(['Market','Decision','Forecast','P(forecast)','Walk-forward acc.','Break-even','Predictions','Why'],
+      d.engine.latest.map(r=>[r.name||nm(r.symbol), r.decision, r.direction, pct(r.p_dir), pct(r.walk_forward_accuracy), pct(r.breakeven), r.samples, r.reason])));
+  }
+  d.errors.forEach(x=>nodes.push(el('p',{className:'msg err'}, x)));
+  return nodes;
+}
 function sessionNodes(d){
+  if(d.contract==='risefall') return sessionNodesRF(d);
   if(d.auto_selected && d.symbol) lastAutoSymbol=d.symbol;
   const used=Object.entries(d.markets_used||{});
   const where = d.auto_selected ? (used.length ? 'auto: best payout, traded on '+used.map(([m,n])=>mname(m)+' ('+n+')').join(', ') : 'auto: best payout') : mname(d.symbol);
@@ -392,14 +521,15 @@ function sessionNodes(d){
   return nodes;
 }
 let lastAutoSymbol=null;
-function sessionBody(ts){ return JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account(), last_symbol:lastAutoSymbol, ...ts}); }
+function sessionBody(ts){ return JSON.stringify({symbol:$('ss-symbol').value, max_trades:+$('ss-max').value, account:account(), last_symbol:lastAutoSymbol, contract:contract(), duration:+$('dur').value, unit:$('dur-unit').value, ...ts}); }
 
 let autoOn=false, autoTotals=null;
 function setAuto(on){
   autoOn=on; const b=$('auto-run'); b.classList.toggle('on',on);
   b.textContent = on ? 'Stop auto-trading' : 'Start auto-trading';
-  ['ss-run','rs-run','pr-run','po-run','ss-symbol','strategy','stake','dloss','lrow','tday','ss-max','ctr-reset'].forEach(id=>$(id).disabled=on);
+  ['ss-run','rs-run','pr-run','po-run','ss-symbol','contract','dur','dur-unit','strategy','stake','dloss','lrow','tday','ss-max','ctr-reset'].forEach(id=>$(id).disabled=on);
   document.querySelectorAll('input[name=acct]').forEach(r=>r.disabled = on || (r.value==='real' && r.dataset.locked==='1'));
+  if(!on) ['po-run'].forEach(id=>$(id).disabled = contract()==='risefall');
 }
 $('auto-run').onclick = async ()=>{
   if(autoOn){ autoOn=false; $('auto-status').textContent='Stopping after the current run finishes…'; return; }
@@ -430,6 +560,8 @@ $('ctr-reset').onclick = e => busy(e.target, async ()=>{
   showCounters({pnl:0,trades:0,losses_in_row:0});
 });
 
+$('cat-refresh').onclick = e => busy(e.target, async ()=>{ message($('cat-out'),'Asking Deriv for every market and its contracts…'); await loadCatalog(true); applyContract(); });
+
 $('po-run').onclick = e => busy(e.target, async ()=>{
   const out=$('pr-out'); message(out,'Asking Deriv for the payout on every market…');
   try{
@@ -449,10 +581,18 @@ $('ss-run').onclick = e => busy(e.target, async ()=>{
 });
 
 $('pr-run').onclick = e => busy(e.target, async ()=>{
-  const out=$('pr-out'); message(out,'Reading recent ticks and the live payout…');
+  const out=$('pr-out');
+  if(contract()==='risefall'){
+    const sym=$('ss-symbol').value;
+    if(sym==='auto'){ message(out,'Choose a single market to see its direction forecast.', true); return; }
+    message(out,'Replaying recent ticks through the direction engine…');
+    try{ await directionPanel(out, sym); }catch(err){ message(out, err.message, true); }
+    return;
+  }
+  message(out,'Reading recent ticks and the live payout…');
   try{
     const stake=tradeSettings().stake; let sym=$('ss-symbol').value;
-    if(sym==='auto'){ const p=await api('/api/payouts?stake='+stake); sym=(p.markets.find(m=>m.payout)||{symbol:'R_100'}).symbol; }
+    if(sym.startsWith('auto')){ const p=await api('/api/payouts?stake='+stake+(sym==='auto:volatility'?'&group=volatility':'')); sym=(p.markets.find(m=>m.payout)||{symbol:'R_100'}).symbol; }
     const d=await api('/api/probability?symbol='+encodeURIComponent(sym)+'&stake='+stake);
     const nodes=[el('p',{className:'msg'}, 'Next bet on '+mname(d.symbol)+': digit '+d.digit+' (strategy "'+d.strategy+'").')];
     const f=[[pct(d.probability),'chance it matches'],[pct(d.recent_frequency),'how often '+d.digit+' came up in the last '+d.ticks+' ticks']];

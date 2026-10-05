@@ -90,7 +90,8 @@ async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
     }
 
 
-async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) -> dict:
+async def run_backtest_best_payout(settings, ticks: int, strategies: list[str],
+                                   symbols: list[str] | None = None) -> dict:
     """Find the market(s) with the highest live Matches payout and backtest every market at its own payout.
 
     Markets are returned best payout first; every market that ties for the top payout is marked best."""
@@ -103,11 +104,17 @@ async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) 
                 return float((await client.matches_proposal(sym, 5, settings.stake, settings.currency))["payout"])
             except DerivAPIError:
                 return None
-        payouts = dict(zip(VOLATILITY_SYMBOLS, await asyncio.gather(*(payout(s) for s in VOLATILITY_SYMBOLS))))
-        paying = [s for s in VOLATILITY_SYMBOLS if payouts[s]]
+        symbols = symbols or list(VOLATILITY_SYMBOLS)
+        sem = asyncio.Semaphore(10)
+
+        async def lim(coro):
+            async with sem:
+                return await coro
+        payouts = dict(zip(symbols, await asyncio.gather(*(lim(payout(s)) for s in symbols))))
+        paying = [s for s in symbols if payouts[s]]
         if not paying:
             raise ValueError("Deriv did not return a payout for any market. Try again shortly.")
-        histories = dict(zip(paying, await asyncio.gather(*(client.tick_history(s, ticks) for s in paying))))
+        histories = dict(zip(paying, await asyncio.gather(*(lim(client.tick_history(s, ticks)) for s in paying))))
 
     top = max(payouts[s] for s in paying)
     markets = []
@@ -119,11 +126,11 @@ async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) 
             "results": [backtest_digits(digits, name, settings.window, settings.trade_every_n_ticks,
                                         settings.stake, payouts[sym], params_from_settings(settings)) for name in strategies],
         })
-    markets.sort(key=lambda m: (-m["payout"], VOLATILITY_SYMBOLS.index(m["symbol"])))
+    markets.sort(key=lambda m: (-m["payout"], symbols.index(m["symbol"])))
     best = [m["symbol"] for m in markets if m["best"]]
     return {
         "stake": settings.stake, "top_payout": top, "best_markets": best,
-        "all_equal": len(best) == len(markets), "unavailable": [s for s in VOLATILITY_SYMBOLS if not payouts[s]],
+        "all_equal": len(best) == len(markets), "unavailable": [s for s in symbols if not payouts[s]],
         "markets": markets,
     }
 

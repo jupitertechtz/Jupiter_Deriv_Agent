@@ -74,3 +74,13 @@ class Settings:
     adaptive_max_entropy: float = field(default_factory=lambda: _f("ADAPTIVE_MAX_ENTROPY", "0.99"))
     adaptive_persistence: int = field(default_factory=lambda: _i("ADAPTIVE_PERSISTENCE", "30"))
     adaptive_eta: float = field(default_factory=lambda: _f("ADAPTIVE_ETA", "0.1"))
+
+    # Adaptive Direction Engine (Rise/Fall). Same idea, judged against a 50% coin flip.
+    direction_history: int = field(default_factory=lambda: _i("DIRECTION_HISTORY", "4000"))
+    direction_min_samples: int = field(default_factory=lambda: _i("DIRECTION_MIN_SAMPLES", "300"))
+    direction_max_p: float = field(default_factory=lambda: _f("DIRECTION_MAX_P", "0.01"))
+    direction_min_edge: float = field(default_factory=lambda: _f("DIRECTION_MIN_EDGE", "0.03"))
+    direction_max_entropy: float = field(default_factory=lambda: _f("DIRECTION_MAX_ENTROPY", "0.995"))
+    direction_persistence: int = field(default_factory=lambda: _i("DIRECTION_PERSISTENCE", "50"))
+    # Rise/Fall contracts longer than this are bought and tracked instead of waited on in a web run
+    max_wait_seconds: float = field(default_factory=lambda: _f("MAX_WAIT_SECONDS", "30"))

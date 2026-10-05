@@ -185,9 +185,10 @@ class DerivClient:
                     await self.request({"forget": sub_id}, timeout=5)
 
     # ---------- market data ----------
-    async def tick_history(self, symbol: str, count: int) -> tuple[list[int], int]:
-        """Last digits of the most recent `count` ticks (pages 5000 at a time)."""
+    async def tick_prices(self, symbol: str, count: int) -> tuple[list[int], list[float], int]:
+        """(epoch times, prices, pip size) for the most recent `count` ticks (pages 5000 at a time)."""
         prices: list = []
+        times: list = []
         end, pip = "latest", None
         while len(prices) < count:
             n = min(5000, count - len(prices))
@@ -196,23 +197,36 @@ class DerivClient:
             pip = resp.get("pip_size", pip)
             if not hist["prices"]:
                 break
-            prices = hist["prices"] + prices
+            prices = [float(p) for p in hist["prices"]] + prices
+            times = [int(t) for t in hist["times"]] + times
             end = int(hist["times"][0]) - 1
             if len(hist["prices"]) < n:
                 break
         if pip is None:
             pip = _infer_pip_size(prices)
         self.pip_sizes[symbol] = int(pip)
-        return [last_digit(p, pip) for p in prices], int(pip)
+        return times, prices, int(pip)
+
+    async def tick_history(self, symbol: str, count: int) -> tuple[list[int], int]:
+        """Last digits of the most recent `count` ticks."""
+        _, prices, pip = await self.tick_prices(symbol, count)
+        return [last_digit(p, pip) for p in prices], pip
+
+    async def active_symbols(self) -> list[dict]:
+        return (await self.request({"active_symbols": "brief"}))["active_symbols"]
+
+    async def contracts_for(self, symbol: str) -> list[dict]:
+        return (await self.request({"contracts_for": symbol}))["contracts_for"].get("available", [])
 
     # ---------- trading ----------
     async def balance(self) -> float:
         return float((await self.request({"balance": 1}))["balance"]["balance"])
 
-    async def matches_history(self, since_epoch: int | None = None, limit: int = 500) -> list[dict]:
-        """Settled DIGITMATCH contracts from the account's profit table, newest first."""
+    async def matches_history(self, since_epoch: int | None = None, limit: int = 500,
+                              contract_types: tuple = ("DIGITMATCH", "CALL", "PUT")) -> list[dict]:
+        """Settled contracts this app trades (Matches, Rise, Fall) from the profit table, newest first."""
         req = {"profit_table": 1, "description": 1, "limit": limit, "sort": "DESC",
-               "contract_type": ["DIGITMATCH"]}
+               "contract_type": list(contract_types)}
         if since_epoch is not None:
             req["date_from"] = str(int(since_epoch))
         rows = []
@@ -222,10 +236,24 @@ class DerivClient:
             buy, sell = float(t["buy_price"]), float(t.get("sell_price") or 0)
             rows.append({
                 "contract_id": t["contract_id"], "purchase_time": int(t["purchase_time"]),
-                "symbol": symbol, "predicted": barrier, "stake": buy,
+                "symbol": symbol, "predicted": barrier if t.get("contract_type", "DIGITMATCH") == "DIGITMATCH"
+                else {"CALL": "Rise", "PUT": "Fall"}.get(t.get("contract_type"), t.get("contract_type")),
+                "contract_type": t.get("contract_type", "DIGITMATCH"), "stake": buy,
                 "payout": float(t["payout"]), "profit": round(sell - buy, 2),
             })
         return rows
+
+    async def proposal(self, contract_type: str, symbol: str, stake: float, currency: str,
+                       duration: int, duration_unit: str, barrier: str | None = None) -> dict:
+        req = {"proposal": 1, "amount": stake, "basis": "stake", "contract_type": contract_type,
+               "currency": currency, "duration": int(duration), "duration_unit": duration_unit,
+               "underlying_symbol": symbol}
+        if barrier is not None:
+            req["barrier"] = str(barrier)
+        return (await self.request(req))["proposal"]
+
+    async def portfolio(self) -> list[dict]:
+        return (await self.request({"portfolio": 1}))["portfolio"].get("contracts", [])
 
     async def matches_proposal(self, symbol: str, digit: int, stake: float, currency: str) -> dict:
         resp = await self.request({

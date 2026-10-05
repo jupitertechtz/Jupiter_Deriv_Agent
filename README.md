@@ -19,6 +19,18 @@ On developers.deriv.com, register a **PAT-type app** (gives the App ID) and crea
 | `python cli.py trade` | Runs the agent on the symbols/strategy in `.env`. |
 | `python cli.py summary` | Win rate, P&L, break-even rate and luck probability from `trades.csv`. |
 
+## Markets and contracts
+The app lists every market on your Deriv account live (`/api/markets`, from `active_symbols` + `contracts_for`, cached 15 minutes) and shows what each offers:
+
+| Contract | Where Deriv offers it | Engine |
+|---|---|---|
+| **Digit Matches** | Synthetic indices that offer digits (Volatility and others) | Adaptive Digit Engine v2 |
+| **Rise/Fall** (CALL/PUT) | Forex, commodities, stock indices, crypto where Deriv offers options, and synthetics | Adaptive Direction Engine |
+
+Financial markets follow exchange hours and close at weekends; closed markets are listed but cannot be traded. Each market's allowed Rise/Fall durations come from Deriv and are enforced. Rise/Fall contracts that end within `MAX_WAIT_SECONDS` (30 s) settle inside the run; longer ones (common on forex) are bought and tracked, settle on Deriv, and count as potential losses against the daily loss limit until they do (from the account's open positions).
+
+**Adaptive Direction Engine** (`direction.py`): momentum (short and long), recency-weighted, reversal and transition models with log-loss weights; predictions scored at the real contract duration, ties counted as losses, only non-overlapping predictions in the ledger; trades only when walk-forward accuracy beats break-even (~51.5%), is unlikely to be luck against a 50% coin flip (p < 0.01), the forecast is clear of 50%, and that has held for 50 consecutive new predictions. Validation: 0 false signals in 576,000 random-walk ticks; real trends detected and traded at 58–74% accuracy.
+
 ## Adaptive Digit Engine v2 (`STRATEGY=adaptive`, the default)
 `engine.py` blends five models (short-term and long-term frequency, recency-weighted frequency, 1st- and 2nd-order digit transitions) with weights that learn from every tick via log loss (Hedge update with a small fixed share). Each prediction is made before the next digit arrives, so its accuracy ledger is a true walk-forward test. It keeps separate state per market.
 
@@ -62,4 +74,4 @@ docker run --env-file .env -v $PWD/trades.csv:/app/trades.csv deriv-matches-agen
 To surface results in the Signal Lab dashboard, have the FastAPI app read `trades.csv` (or swap `Journal` for a database writer).
 
 ## Files
-`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `engine.py` adaptive engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI
+`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `markets.py` live market catalog · `risefall.py` Rise/Fall trading · `direction.py` direction engine · `engine.py` adaptive digit engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI

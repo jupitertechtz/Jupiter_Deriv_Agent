@@ -1,25 +1,39 @@
-"""FastAPI web layer for Vercel: dashboard + short, capped demo-trading sessions."""
+"""FastAPI web layer for Vercel: dashboard + short, capped trading sessions.
+
+Contracts:
+  matches   Digit Matches on synthetic indices that offer digits (Adaptive Digit Engine or simple strategies)
+  risefall  Rise/Fall on forex, commodities, stock indices, crypto (where offered) and synthetics
+            (Adaptive Direction Engine or simple strategies)
+"""
 import hmac
 
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
 
 from analyzer import STRATEGIES
 from backtest import BACKTEST_STRATEGIES, run_backtest, run_backtest_best_payout
 from config import LIVE_CONFIRM_PHRASE, Settings
 from dashboard import DASHBOARD_HTML
-from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError
-from services import (SESSION_STRATEGIES, account_results, analyze_markets, engine_report, engine_scan,
-                      market_payouts, match_probability, run_session, with_overrides)
+from deriv_client import DerivAPIError
+from direction import DIRECTION_STRATEGIES
+from markets import find, get_catalog
+from risefall import backtest_risefall, direction_report, run_risefall_session
+from services import (AUTO_GROUPS, DIGIT_STRATEGIES, SESSION_STRATEGIES, _for_account, account_results,
+                      analyze_markets, counting_start, digit_symbols, engine_report, engine_scan, market_payouts,
+                      match_probability, run_session, with_overrides)
 
 app = FastAPI(title="Jupiter Deriv Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")
 settings = Settings()
+UNITS = "^(t|s|m|h)$"
 
 
-def _check_symbol(symbol: str) -> str:
-    if symbol not in VOLATILITY_SYMBOLS:
-        raise HTTPException(400, f"Unknown market '{symbol}'. Use one of: {', '.join(VOLATILITY_SYMBOLS)}")
+async def _digit_symbol(symbol: str) -> str:
+    cat = await get_catalog(settings)
+    m = find(cat, symbol)
+    if m is None or not m["digits"]:
+        raise HTTPException(400, f"'{symbol}' does not offer Digit Matches. Digit contracts exist only on "
+                                 f"synthetic indices; use Rise/Fall for forex, commodities, stock indices and crypto.")
     return symbol
 
 
@@ -33,6 +47,13 @@ def _require_key(key: str | None) -> None:
 def _require_token() -> None:
     if not settings.api_token:
         raise HTTPException(503, "DERIV_API_TOKEN is not set in the Vercel project's environment variables.")
+
+
+def _stake(stake):
+    try:
+        return with_overrides(settings, stake=stake)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 async def _call(coro):
@@ -60,69 +81,86 @@ async def health():
         "token_configured": bool(s.api_token), "app_id_configured": bool(s.app_id),
         "session_key_configured": bool(s.session_key), "account_type": s.account_type,
         "live_enabled": s.live_trading_confirm == LIVE_CONFIRM_PHRASE,
-        "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols), "all_symbols": VOLATILITY_SYMBOLS,
-        "strategy": s.strategy, "strategies": list(SESSION_STRATEGIES), "stake": s.stake,
+        "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols),
+        "strategy": s.strategy, "strategies": list(DIGIT_STRATEGIES), "digit_strategies": list(DIGIT_STRATEGIES),
+        "direction_strategies": list(DIRECTION_STRATEGIES), "stake": s.stake,
+        "min_stake": s.min_stake, "max_stake": s.max_stake, "max_daily_loss_ceiling": s.max_daily_loss_ceiling,
+        "max_losses_in_row_ceiling": s.max_losses_in_row_ceiling, "max_trades_per_day_ceiling": s.max_trades_per_day_ceiling,
+        "max_wait_seconds": s.max_wait_seconds,
         "engine": {"history": s.adaptive_history, "min_samples": s.adaptive_min_samples, "max_p": s.adaptive_max_p,
                    "min_edge": s.adaptive_min_edge, "max_entropy": s.adaptive_max_entropy,
                    "persistence": s.adaptive_persistence},
-        "min_stake": s.min_stake, "max_stake": s.max_stake, "max_daily_loss_ceiling": s.max_daily_loss_ceiling,
-        "max_losses_in_row_ceiling": s.max_losses_in_row_ceiling, "max_trades_per_day_ceiling": s.max_trades_per_day_ceiling,
         "limits": {"max_daily_loss": s.max_daily_loss, "max_trades_per_day": s.max_trades_per_session,
-                   "max_consecutive_losses": s.max_consecutive_losses,
-                   "trades_per_run": s.session_max_trades},
+                   "max_consecutive_losses": s.max_consecutive_losses, "trades_per_run": s.session_max_trades},
     }
 
 
+@app.get("/api/markets")
+async def markets(refresh: bool = False):
+    """Every market on this account with what it offers: Digit Matches and/or Rise/Fall (with durations)."""
+    cat = await get_catalog(settings, refresh=refresh)
+    return {"source": cat["source"], "built": cat["built"], "markets": cat["markets"]}
+
+
 @app.get("/api/analyze")
-async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None = None):
-    syms = [_check_symbol(x.strip()) for x in symbols.split(",")] if symbols else VOLATILITY_SYMBOLS
+async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None = None,
+                  group: str = Query("all", pattern="^(all|volatility)$")):
+    syms = [await _digit_symbol(x.strip()) for x in symbols.split(",")] if symbols else \
+        await digit_symbols(settings, group)
     return await _call(analyze_markets(settings, syms, ticks))
 
 
 @app.get("/api/backtest")
 async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=20000),
-                   strategies: str | None = None, stake: float | None = None):
-    """Backtest the one market you selected."""
+                   strategies: str | None = None, stake: float | None = None,
+                   contract: str = Query("matches", pattern="^(matches|risefall)$"),
+                   duration: int = Query(5, ge=1), unit: str = Query("t", pattern=UNITS)):
+    """Backtest the one market you selected (Digit Matches or Rise/Fall)."""
+    s = _stake(stake)
+    if contract == "risefall":
+        return await _call(backtest_risefall(s, symbol, duration, unit, ticks))
     names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
-    try:
-        s = with_overrides(settings, stake=stake)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return await _call(run_backtest(s, _check_symbol(symbol), ticks, names))
+    return await _call(run_backtest(s, await _digit_symbol(symbol), ticks, names))
 
 
 @app.get("/api/backtest/best-payout")
-async def backtest_best_payout(ticks: int = Query(5000, ge=1000, le=10000),
-                               strategies: str | None = None, stake: float | None = None):
-    """Find the highest-payout market(s) right now and backtest every market at its own payout."""
+async def backtest_best_payout(ticks: int = Query(5000, ge=1000, le=10000), strategies: str | None = None,
+                               stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$")):
+    """Digit Matches: find the highest-payout market(s) now and backtest every digit market at its own payout."""
+    s = _stake(stake)
     names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
-    try:
-        s = with_overrides(settings, stake=stake)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return await _call(run_backtest_best_payout(s, ticks, names))
+    ticks = min(ticks, 5000) if group == "all" else ticks
+    return await _call(run_backtest_best_payout(s, ticks, names, await digit_symbols(s, group)))
 
 
 @app.get("/api/probability")
 async def probability(symbol: str = "R_100", stake: float | None = None):
-    return await _call(match_probability(settings, _check_symbol(symbol), stake))
+    return await _call(match_probability(settings, await _digit_symbol(symbol), stake))
 
 
 @app.get("/api/payouts")
-async def payouts(stake: float | None = None):
-    return await _call(market_payouts(settings, stake))
+async def payouts(stake: float | None = None, group: str = Query("all", pattern="^(all|volatility)$")):
+    return await _call(market_payouts(settings, stake, group))
 
 
 @app.get("/api/engine")
 async def engine(symbol: str = "R_100", ticks: int | None = Query(None, ge=1500, le=10000), stake: float | None = None):
-    """Adaptive Digit Engine v2 walk-forward report for one market."""
-    return await _call(engine_report(settings, _check_symbol(symbol), ticks, stake))
+    """Adaptive Digit Engine v2 walk-forward report for one digit market."""
+    return await _call(engine_report(settings, await _digit_symbol(symbol), ticks, stake))
 
 
 @app.get("/api/engine/scan")
-async def engine_scan_all(ticks: int | None = Query(None, ge=1500, le=5000), stake: float | None = None):
-    """Adaptive Digit Engine v2 decision for every market, MATCH first then by score."""
-    return await _call(engine_scan(settings, ticks, stake))
+async def engine_scan_all(ticks: int | None = Query(None, ge=1500, le=5000), stake: float | None = None,
+                          group: str = Query("all", pattern="^(all|volatility)$")):
+    """Adaptive Digit Engine v2 decision for every digit market, MATCH first then by score."""
+    return await _call(engine_scan(settings, ticks, stake, group))
+
+
+@app.get("/api/direction")
+async def direction(symbol: str, duration: int = Query(5, ge=1), unit: str = Query("t", pattern=UNITS),
+                    stake: float | None = None):
+    """Adaptive Direction Engine walk-forward report for Rise/Fall on one market."""
+    return await _call(direction_report(_stake(stake), symbol, duration, unit))
 
 
 @app.get("/api/results")
@@ -143,7 +181,10 @@ class SessionRequest(BaseModel):
     max_trades_per_day: int | None = None
     count_since: int | None = None   # epoch seconds of the user's last counter reset
     last_symbol: str | None = None   # auto mode: market used last, so rotation continues across runs
-    strategy: str | None = None      # "adaptive" (default) or a simple strategy
+    strategy: str | None = None
+    contract: str = "matches"        # "matches" or "risefall"
+    duration: int = 5                # Rise/Fall only
+    unit: str = "t"                  # Rise/Fall only: t, s, m, h
 
 
 @app.post("/api/session")
@@ -151,19 +192,36 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
     _require_key(x_session_key)
     _require_token()
     body = body or SessionRequest()
-    symbol = None if not body.symbol else ("auto" if body.symbol == "auto" else _check_symbol(body.symbol))
     if body.account not in ("demo", "real"):
         raise HTTPException(400, "Account must be 'demo' or 'real'.")
+    last = body.last_symbol if body.last_symbol and len(body.last_symbol) <= 40 else None
+
+    if body.contract == "risefall":
+        if body.unit not in ("t", "s", "m", "h") or body.duration < 1:
+            raise HTTPException(400, "Duration must be a whole number of ticks, seconds, minutes or hours.")
+        try:
+            s = with_overrides(_for_account(settings, body.account), stake=body.stake,
+                               daily_loss_limit=body.daily_loss_limit, max_losses_in_row=body.max_losses_in_row,
+                               max_trades_per_day=body.max_trades_per_day, strategy=body.strategy)
+        except (ValueError, PermissionError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 400, str(exc)) from exc
+        symbol = body.symbol or "auto"
+        max_trades = max(1, min(body.max_trades or s.session_max_trades, 50))
+        return await _call(run_risefall_session(s, symbol, body.duration, body.unit, max_trades,
+                                                counting_start(body.count_since), last))
+    if body.contract != "matches":
+        raise HTTPException(400, "Contract must be 'matches' or 'risefall'.")
+    symbol = None
+    if body.symbol:
+        symbol = body.symbol if body.symbol in AUTO_GROUPS else await _digit_symbol(body.symbol)
     return await _call(run_session(settings, symbol, body.max_trades, body.account,
                                    body.stake, body.daily_loss_limit, body.max_losses_in_row,
-                                   body.max_trades_per_day, body.count_since,
-                                   body.last_symbol if body.last_symbol in VOLATILITY_SYMBOLS else None,
-                                   body.strategy))
+                                   body.max_trades_per_day, body.count_since, last, body.strategy))
 
 
 @app.get("/api/cron")
 async def cron(authorization: str | None = Header(None)):
-    """For a Vercel cron job: Vercel sends 'Authorization: Bearer <CRON_SECRET>'."""
+    """For a Vercel cron job: Vercel sends 'Authorization: Bearer <CRON_SECRET>'. Runs Digit Matches defaults."""
     if not settings.cron_secret:
         raise HTTPException(503, "CRON_SECRET is not set, so scheduled sessions are off.")
     if not authorization or not hmac.compare_digest(authorization, f"Bearer {settings.cron_secret}"):

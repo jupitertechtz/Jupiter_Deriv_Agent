@@ -9,6 +9,7 @@ import dataclasses
 from datetime import datetime, timezone
 
 from analyzer import STRATEGIES, DigitAnalyzer
+from engine import ADAPTIVE, AdaptiveDigitEngine, params_from_settings
 from config import LIVE_CONFIRM_PHRASE, Settings
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError, DerivClient, last_digit
 from journal import stats_from_rows, verdict
@@ -34,10 +35,18 @@ def _for_account(s: Settings, account_type: str | None) -> Settings:
     return dataclasses.replace(s, account_type=account_type)
 
 
+SESSION_STRATEGIES = (ADAPTIVE, *STRATEGIES)
+
+
 def with_overrides(s: Settings, stake: float | None = None, daily_loss_limit: float | None = None,
-                   max_losses_in_row: int | None = None, max_trades_per_day: int | None = None) -> Settings:
+                   max_losses_in_row: int | None = None, max_trades_per_day: int | None = None,
+                   strategy: str | None = None) -> Settings:
     """Apply dashboard-chosen limits, within the server's ceilings."""
     changes = {}
+    if strategy is not None:
+        if strategy not in SESSION_STRATEGIES:
+            raise ValueError(f"Unknown strategy '{strategy}'. Options: {', '.join(SESSION_STRATEGIES)}.")
+        changes["strategy"] = strategy
     if stake is not None:
         stake = round(float(stake), 2)
         if not s.min_stake <= stake <= s.max_stake:
@@ -82,7 +91,14 @@ async def match_probability(s: Settings, symbol: str, stake: float | None = None
         digits, _ = await client.tick_history(symbol, s.window)
         analyzer = DigitAnalyzer(s.window)
         analyzer.extend(digits)
-        digit = STRATEGIES[s.strategy](analyzer)
+        engine_eval = None
+        if s.strategy == ADAPTIVE:
+            hist, _ = await client.tick_history(symbol, s.adaptive_history)
+            engine = AdaptiveDigitEngine(params_from_settings(s)).fit(hist)
+            engine_eval = engine.evaluate()
+            digit = engine_eval["digit"]
+        else:
+            digit = STRATEGIES[s.strategy](analyzer)
         payout = None
         with contextlib.suppress(DerivAPIError):
             payout = float((await client.matches_proposal(symbol, digit, s.stake, s.currency))["payout"])
@@ -92,6 +108,10 @@ async def match_probability(s: Settings, symbol: str, stake: float | None = None
         "frequencies": freqs, "recent_frequency": freqs[digit], "probability": 0.10,
         "uniformity_p": analyzer.uniformity_p_value(), "stake": s.stake, "payout": payout,
     }
+    if engine_eval is not None:
+        ev = engine.evaluate(s.stake / payout if payout else 0.10)
+        out.update({"engine_decision": ev["decision"], "engine_reason": ev["reason"],
+                    "model_probability": ev["p_best"], "walk_forward_accuracy": ev["walk_forward_accuracy"]})
     if payout:
         out.update({
             "profit_if_win": round(payout - s.stake, 2),
@@ -187,19 +207,181 @@ async def account_results(s: Settings, limit: int = 500, account_type: str | Non
             "recent": rows[:50]}
 
 
+async def _payout(client: DerivClient, s: Settings, symbol: str) -> float | None:
+    try:
+        return float((await client.matches_proposal(symbol, 5, s.stake, s.currency))["payout"])
+    except DerivAPIError:
+        return None
+
+
+async def engine_report(s: Settings, symbol: str, ticks: int | None = None, stake: float | None = None) -> dict:
+    """Run the Adaptive Digit Engine walk-forward over recent ticks of one market."""
+    s = with_overrides(s, stake=stake)
+    ticks = ticks or s.adaptive_history
+    async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
+        (digits, _), payout = await asyncio.gather(client.tick_history(symbol, ticks), _payout(client, s, symbol))
+    breakeven = s.stake / payout if payout else 0.10
+    engine = AdaptiveDigitEngine(params_from_settings(s)).fit(digits, breakeven)
+    ev = engine.evaluate(breakeven)
+    ev.update({"symbol": symbol, "payout": payout, "stake": s.stake, "ticks": len(digits),
+               "breakeven_known": bool(payout)})
+    return ev
+
+
+async def engine_scan(s: Settings, ticks: int | None = None, stake: float | None = None) -> dict:
+    """Engine evaluation for every market, ranked: MATCH first, then by score."""
+    s = with_overrides(s, stake=stake)
+    ticks = ticks or s.adaptive_history
+    async with DerivClient(s.app_id, s.api_token or None, s.api_base, s.account_type) as client:
+        hist = await asyncio.gather(*(client.tick_history(sym, ticks) for sym in VOLATILITY_SYMBOLS))
+        pays = await asyncio.gather(*(_payout(client, s, sym) for sym in VOLATILITY_SYMBOLS))
+    order = {"MATCH": 0, "WAIT": 1, "SKIP": 2}
+    rows = []
+    for sym, (digits, _), payout in zip(VOLATILITY_SYMBOLS, hist, pays):
+        be = s.stake / payout if payout else 0.10
+        ev = AdaptiveDigitEngine(params_from_settings(s)).fit(digits, be).evaluate(be)
+        ev.update({"symbol": sym, "payout": payout, "ticks": len(digits)})
+        ev.pop("probabilities", None)
+        rows.append(ev)
+    rows.sort(key=lambda r: (order[r["decision"]], -r["score"]))
+    return {"stake": s.stake, "markets": rows, "any_match": rows[0]["decision"] == "MATCH"}
+
+
+async def run_adaptive_session(s: Settings, symbol: str, auto: bool, max_trades: int, since: int) -> dict:
+    """Adaptive engine session: per-market engines learn from live ticks; trade only on MATCH."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + s.session_time_budget
+    params = params_from_settings(s)
+
+    async with DerivClient(s.app_id, s.api_token, s.api_base, s.account_type) as client:
+        info = _account_info(client.account)
+        if not info["is_virtual"] and s.live_trading_confirm != LIVE_CONFIRM_PHRASE:
+            raise PermissionError("This token belongs to a REAL-money account. Sessions only run on the demo "
+                                  "account unless LIVE_TRADING_CONFIRM is set to the exact phrase in config.py.")
+        s = dataclasses.replace(s, currency=info["currency"] or s.currency)
+
+        risk = RiskManager(s)
+        for r in reversed(await client.matches_history(since_epoch=since)):
+            risk.record(r["profit"])
+        trades_before = risk.session_trades
+        risk.session_pnl, risk.session_wins = 0.0, 0
+
+        candidates = list(VOLATILITY_SYMBOLS) if auto else [symbol]
+        pays = dict(zip(candidates, await asyncio.gather(*(_payout(client, s, c) for c in candidates))))
+        candidates = [c for c in candidates if pays[c]]
+        if not candidates:
+            raise ValueError("No market is offering a payout right now. Try again shortly.")
+        histories = await asyncio.gather(*(client.tick_history(c, s.adaptive_history) for c in candidates))
+        breakeven = {c: s.stake / pays[c] for c in candidates}
+        engines = {c: AdaptiveDigitEngine(params).fit(h[0], breakeven[c]) for c, h in zip(candidates, histories)}
+
+        tick = asyncio.Event()
+
+        async def feed(sym):
+            gen = client.subscribe({"ticks": sym})
+            try:
+                async for msg in gen:
+                    engines[sym].update(last_digit(msg["tick"]["quote"], msg["tick"]["pip_size"]))
+                    tick.set()
+            finally:
+                with contextlib.suppress(Exception):
+                    await gen.aclose()
+
+        feeders = [asyncio.create_task(feed(c)) for c in candidates]
+        trades, errors, skips = [], [], {}
+        checks = 0
+        stop_reason = f"reached {max_trades} trades for this run"
+        try:
+            while len(trades) < max_trades:
+                if deadline - loop.time() < 12:
+                    stop_reason = ("time budget for this run used up" +
+                                   ("" if trades else ": no market passed the evidence gate"))
+                    break
+                ok, reason = risk.can_trade()
+                if not ok:
+                    stop_reason = reason
+                    break
+                tick.clear()
+                await asyncio.wait_for(tick.wait(), timeout=10)
+                checks += 1
+                evals = {c: engines[c].evaluate(breakeven[c], fast=True) for c in candidates}
+                ready = [c for c in candidates if evals[c]["decision"] == "MATCH"]
+                if not ready:
+                    top = max(candidates, key=lambda c: evals[c]["score"])
+                    skips[evals[top]["gate"]] = skips.get(evals[top]["gate"], 0) + 1
+                    continue
+                sym = max(ready, key=lambda c: evals[c]["score"])
+                ev = evals[sym]
+                try:
+                    prop = await client.matches_proposal(sym, ev["digit"], s.stake, s.currency)
+                    bought = await client.buy(prop)
+                    poc = await client.wait_for_settlement(bought["contract_id"],
+                                                           timeout=max(5, min(30, deadline - loop.time() - 2)))
+                except DerivAPIError as exc:
+                    errors.append(str(exc))
+                    risk.record_error(fatal_reason=str(exc) if exc.code in FATAL_CODES else None)
+                    continue
+                except asyncio.TimeoutError:
+                    errors.append("A contract did not settle in time; check your Deriv statement.")
+                    stop_reason = "contract settlement timed out"
+                    break
+                profit = float(poc["profit"])
+                risk.record(profit)
+                exit_val = poc.get("exit_spot")
+                trades.append({"contract_id": bought["contract_id"], "symbol": sym, "predicted": ev["digit"],
+                               "exit_digit": last_digit(exit_val, client.pip_sizes.get(sym, 2)) if exit_val is not None else None,
+                               "stake": float(bought["buy_price"]), "payout": float(bought["payout"]),
+                               "profit": round(profit, 2), "status": poc.get("status"),
+                               "model_probability": ev["p_best"], "walk_forward_accuracy": ev["walk_forward_accuracy"]})
+        except asyncio.TimeoutError:
+            stop_reason = "tick stream went quiet"
+        finally:
+            for f in feeders:
+                f.cancel()
+            await asyncio.gather(*feeders, return_exceptions=True)
+        final = {c: engines[c].evaluate(breakeven[c]) for c in candidates}
+        with contextlib.suppress(Exception):
+            info["balance"] = await client.balance()
+
+    order = {"MATCH": 0, "WAIT": 1, "SKIP": 2}
+    latest = sorted(({"symbol": c, **{k: final[c][k] for k in ("decision", "gate", "reason", "digit", "p_best",
+                      "walk_forward_accuracy", "samples", "entropy", "luck_p", "score", "breakeven")}}
+                     for c in candidates), key=lambda r: (order[r["decision"]], -r["score"]))
+    used = {}
+    for t in trades:
+        used[t["symbol"]] = used.get(t["symbol"], 0) + 1
+    return {
+        "account": info, "symbol": trades[-1]["symbol"] if trades else (symbol if not auto else None),
+        "auto_selected": auto, "markets_used": used, "switches": [], "market_scan": None,
+        "strategy": ADAPTIVE, "stake": s.stake, "stop_reason": stop_reason,
+        "can_continue": stop_reason.startswith("reached") or stop_reason.startswith("time budget"),
+        "trades": trades, "errors": errors,
+        "engine": {"checks": checks, "skipped_because": skips, "latest": latest},
+        "run": {"trades": len(trades), "wins": sum(t["profit"] > 0 for t in trades),
+                "pnl": round(sum(t["profit"] for t in trades), 2)},
+        "today": {"trades": trades_before + len(trades), "pnl": round(risk.daily_pnl, 2),
+                  "daily_loss_cap": s.max_daily_loss, "daily_trade_cap": s.max_trades_per_session,
+                  "losses_in_row": risk.consecutive_losses, "losses_in_row_cap": s.max_consecutive_losses,
+                  "counting_since": since},
+    }
+
+
 async def run_session(s: Settings, symbol: str | None = None, max_trades: int | None = None,
                       account_type: str | None = None, stake: float | None = None,
                       daily_loss_limit: float | None = None, max_losses_in_row: int | None = None,
                       max_trades_per_day: int | None = None, count_since: int | None = None,
-                      last_symbol: str | None = None) -> dict:
+                      last_symbol: str | None = None, strategy: str | None = None) -> dict:
     """One capped run. symbol="auto" re-checks every market's payout during the run and trades the
     best-paying one, rotating through markets that tie for the best payout."""
     s = with_overrides(_for_account(s, account_type), stake=stake, daily_loss_limit=daily_loss_limit,
-                       max_losses_in_row=max_losses_in_row, max_trades_per_day=max_trades_per_day)
+                       max_losses_in_row=max_losses_in_row, max_trades_per_day=max_trades_per_day,
+                       strategy=strategy)
     since = counting_start(count_since)
     symbol = symbol or s.symbols[0]
     auto = symbol == "auto"
     max_trades = max(1, min(max_trades or s.session_max_trades, 50))
+    if s.strategy == ADAPTIVE:
+        return await run_adaptive_session(s, symbol, auto, max_trades, since)
     strategy = STRATEGIES[s.strategy]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + s.session_time_budget

@@ -6,11 +6,12 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from analyzer import STRATEGIES
-from backtest import run_backtest, run_backtest_best_payout
+from backtest import BACKTEST_STRATEGIES, run_backtest, run_backtest_best_payout
 from config import LIVE_CONFIRM_PHRASE, Settings
 from dashboard import DASHBOARD_HTML
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError
-from services import account_results, analyze_markets, market_payouts, match_probability, run_session, with_overrides
+from services import (SESSION_STRATEGIES, account_results, analyze_markets, engine_report, engine_scan,
+                      market_payouts, match_probability, run_session, with_overrides)
 
 app = FastAPI(title="Jupiter Deriv Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")
 settings = Settings()
@@ -60,7 +61,10 @@ async def health():
         "session_key_configured": bool(s.session_key), "account_type": s.account_type,
         "live_enabled": s.live_trading_confirm == LIVE_CONFIRM_PHRASE,
         "cron_configured": bool(s.cron_secret), "symbols": list(s.symbols), "all_symbols": VOLATILITY_SYMBOLS,
-        "strategy": s.strategy, "strategies": list(STRATEGIES), "stake": s.stake,
+        "strategy": s.strategy, "strategies": list(SESSION_STRATEGIES), "stake": s.stake,
+        "engine": {"history": s.adaptive_history, "min_samples": s.adaptive_min_samples, "max_p": s.adaptive_max_p,
+                   "min_edge": s.adaptive_min_edge, "max_entropy": s.adaptive_max_entropy,
+                   "persistence": s.adaptive_persistence},
         "min_stake": s.min_stake, "max_stake": s.max_stake, "max_daily_loss_ceiling": s.max_daily_loss_ceiling,
         "max_losses_in_row_ceiling": s.max_losses_in_row_ceiling, "max_trades_per_day_ceiling": s.max_trades_per_day_ceiling,
         "limits": {"max_daily_loss": s.max_daily_loss, "max_trades_per_day": s.max_trades_per_session,
@@ -79,7 +83,7 @@ async def analyze(ticks: int = Query(2000, ge=100, le=5000), symbols: str | None
 async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=20000),
                    strategies: str | None = None, stake: float | None = None):
     """Backtest the one market you selected."""
-    names = [x.strip() for x in strategies.split(",")] if strategies else list(STRATEGIES)
+    names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
     try:
         s = with_overrides(settings, stake=stake)
     except ValueError as exc:
@@ -91,7 +95,7 @@ async def backtest(symbol: str = "R_100", ticks: int = Query(10000, ge=1000, le=
 async def backtest_best_payout(ticks: int = Query(5000, ge=1000, le=10000),
                                strategies: str | None = None, stake: float | None = None):
     """Find the highest-payout market(s) right now and backtest every market at its own payout."""
-    names = [x.strip() for x in strategies.split(",")] if strategies else list(STRATEGIES)
+    names = [x.strip() for x in strategies.split(",")] if strategies else list(BACKTEST_STRATEGIES)
     try:
         s = with_overrides(settings, stake=stake)
     except ValueError as exc:
@@ -107,6 +111,18 @@ async def probability(symbol: str = "R_100", stake: float | None = None):
 @app.get("/api/payouts")
 async def payouts(stake: float | None = None):
     return await _call(market_payouts(settings, stake))
+
+
+@app.get("/api/engine")
+async def engine(symbol: str = "R_100", ticks: int | None = Query(None, ge=1500, le=10000), stake: float | None = None):
+    """Adaptive Digit Engine v2 walk-forward report for one market."""
+    return await _call(engine_report(settings, _check_symbol(symbol), ticks, stake))
+
+
+@app.get("/api/engine/scan")
+async def engine_scan_all(ticks: int | None = Query(None, ge=1500, le=5000), stake: float | None = None):
+    """Adaptive Digit Engine v2 decision for every market, MATCH first then by score."""
+    return await _call(engine_scan(settings, ticks, stake))
 
 
 @app.get("/api/results")
@@ -127,6 +143,7 @@ class SessionRequest(BaseModel):
     max_trades_per_day: int | None = None
     count_since: int | None = None   # epoch seconds of the user's last counter reset
     last_symbol: str | None = None   # auto mode: market used last, so rotation continues across runs
+    strategy: str | None = None      # "adaptive" (default) or a simple strategy
 
 
 @app.post("/api/session")
@@ -140,7 +157,8 @@ async def session(body: SessionRequest | None = None, x_session_key: str | None 
     return await _call(run_session(settings, symbol, body.max_trades, body.account,
                                    body.stake, body.daily_loss_limit, body.max_losses_in_row,
                                    body.max_trades_per_day, body.count_since,
-                                   body.last_symbol if body.last_symbol in VOLATILITY_SYMBOLS else None))
+                                   body.last_symbol if body.last_symbol in VOLATILITY_SYMBOLS else None,
+                                   body.strategy))
 
 
 @app.get("/api/cron")

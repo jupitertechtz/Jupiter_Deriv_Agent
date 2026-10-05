@@ -2,13 +2,55 @@
 import asyncio
 
 from analyzer import STRATEGIES, DigitAnalyzer
+from engine import ADAPTIVE, AdaptiveDigitEngine, EngineParams, params_from_settings
 from deriv_client import VOLATILITY_SYMBOLS, DerivAPIError, DerivClient
 from stats import binom_sf
 
 
+ADAPTIVE_UNGATED = "adaptive_ungated"
+BACKTEST_STRATEGIES = (ADAPTIVE, ADAPTIVE_UNGATED, *STRATEGIES)
+
+
+def _adaptive_backtest(digits, gated: bool, every: int, stake: float, payout: float,
+                       params: EngineParams | None) -> dict:
+    """Walk-forward: the engine learns tick by tick and is never shown a digit before betting on it.
+
+    Gated: bet only when the engine says MATCH (re-checked every tick, one open contract at a time).
+    Ungated: always bet the engine's top digit every `every` ticks once it has warmed up."""
+    engine = AdaptiveDigitEngine(params)
+    breakeven = stake / payout
+    warm = engine.p.short_window + engine.p.min_samples
+    n = wins = 0
+    busy_until = -1
+    for i, d in enumerate(digits[:-1]):
+        engine.update(d)
+        if i < warm:
+            continue
+        if gated:
+            ev = engine.evaluate(breakeven, fast=True)
+            if ev["decision"] != "MATCH" or i <= busy_until:
+                continue
+            busy_until = i + 1                      # contract runs over the next tick
+            pick = ev["digit"]
+        else:
+            if i % every:
+                continue
+            pick = engine.pending[2]
+        n += 1
+        wins += digits[i + 1] == pick
+    pnl = wins * (payout - stake) - (n - wins) * stake
+    return {
+        "strategy": ADAPTIVE if gated else ADAPTIVE_UNGATED, "trades": n, "wins": wins,
+        "win_rate": wins / n if n else 0.0, "pnl": round(pnl, 2),
+        "luck_p": binom_sf(wins, n, 0.10) if n else 1.0,
+    }
+
+
 def backtest_digits(digits, strategy_name: str, window: int, every: int,
-                    stake: float, payout: float) -> dict:
+                    stake: float, payout: float, params: EngineParams | None = None) -> dict:
     """Bet at tick i on the strategy's digit; the contract settles on tick i+1."""
+    if strategy_name in (ADAPTIVE, ADAPTIVE_UNGATED):
+        return _adaptive_backtest(digits, strategy_name == ADAPTIVE, every, stake, payout, params)
     strategy = STRATEGIES[strategy_name]
     analyzer = DigitAnalyzer(window)
     n = wins = 0
@@ -29,7 +71,7 @@ def backtest_digits(digits, strategy_name: str, window: int, every: int,
 async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
                        payout: float | None = None) -> dict:
     """Backtest one selected market at its live payout."""
-    unknown = [s for s in strategies if s not in STRATEGIES]
+    unknown = [s for s in strategies if s not in BACKTEST_STRATEGIES]
     if unknown:
         raise ValueError(f"Unknown strategies: {', '.join(unknown)}")
     async with DerivClient(settings.app_id, settings.api_token or None, settings.api_base, settings.account_type) as client:
@@ -44,7 +86,7 @@ async def run_backtest(settings, symbol: str, ticks: int, strategies: list[str],
         "symbol": symbol, "ticks": len(digits), "stake": settings.stake, "payout": payout,
         "breakeven_rate": settings.stake / payout,
         "results": [backtest_digits(digits, name, settings.window, settings.trade_every_n_ticks,
-                                    settings.stake, payout) for name in strategies],
+                                    settings.stake, payout, params_from_settings(settings)) for name in strategies],
     }
 
 
@@ -52,7 +94,7 @@ async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) 
     """Find the market(s) with the highest live Matches payout and backtest every market at its own payout.
 
     Markets are returned best payout first; every market that ties for the top payout is marked best."""
-    unknown = [s for s in strategies if s not in STRATEGIES]
+    unknown = [s for s in strategies if s not in BACKTEST_STRATEGIES]
     if unknown:
         raise ValueError(f"Unknown strategies: {', '.join(unknown)}")
     async with DerivClient(settings.app_id, settings.api_token or None, settings.api_base, settings.account_type) as client:
@@ -75,7 +117,7 @@ async def run_backtest_best_payout(settings, ticks: int, strategies: list[str]) 
             "symbol": sym, "payout": payouts[sym], "ticks": len(digits),
             "breakeven_rate": settings.stake / payouts[sym], "best": payouts[sym] >= top - 0.005,
             "results": [backtest_digits(digits, name, settings.window, settings.trade_every_n_ticks,
-                                        settings.stake, payouts[sym]) for name in strategies],
+                                        settings.stake, payouts[sym], params_from_settings(settings)) for name in strategies],
         })
     markets.sort(key=lambda m: (-m["payout"], VOLATILITY_SYMBOLS.index(m["symbol"])))
     best = [m["symbol"] for m in markets if m["best"]]

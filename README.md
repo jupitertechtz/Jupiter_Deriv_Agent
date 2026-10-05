@@ -9,7 +9,7 @@ Streams Deriv volatility-index ticks, analyzes last-digit statistics, and places
 pip install -r requirements.txt
 cp .env.example .env      # paste your DEMO account API token (scopes: Read + Trade)
 ```
-Create the token in Deriv: Account settings → API token. Use the token for your **virtual (VRTC…) account**. Register your own app_id on Deriv's API dashboard for anything long-running.
+On developers.deriv.com, register a **PAT-type app** (gives the App ID) and create a **Personal Access Token** with the trade scope. The agent uses Deriv's current API: it lists your options accounts over REST, picks the demo account (`ACCOUNT_TYPE=demo`), and opens the WebSocket with a one-time password. Market data uses the public WebSocket and needs no token. Never commit the token; on Vercel store it as a Sensitive environment variable.
 
 ## Commands
 | Command | What it does |
@@ -18,6 +18,15 @@ Create the token in Deriv: Account settings → API token. Use the token for you
 | `python cli.py backtest --symbol R_100 --ticks 20000` | Replays real history against every strategy using Deriv's live payout; shows break-even win rate. |
 | `python cli.py trade` | Runs the agent on the symbols/strategy in `.env`. |
 | `python cli.py summary` | Win rate, P&L, break-even rate and luck probability from `trades.csv`. |
+
+## Adaptive Digit Engine v2 (`STRATEGY=adaptive`, the default)
+`engine.py` blends five models (short-term and long-term frequency, recency-weighted frequency, 1st- and 2nd-order digit transitions) with weights that learn from every tick via log loss (Hedge update with a small fixed share). Each prediction is made before the next digit arrives, so its accuracy ledger is a true walk-forward test. It keeps separate state per market.
+
+It trades only when all of these hold: the next-digit forecast is not near uniform (predictive entropy < 0.99), at least 1,000 walk-forward predictions exist, walk-forward accuracy beats the break-even rate, a binomial test puts the chance of that accuracy being luck below 1%, the edge over 10% and the lead over the second digit are large enough, and all of this has held for 30 consecutive ticks. Otherwise it reports WAIT or SKIP with the reason.
+
+Validation: on 189,000 simulated fair-random ticks it gave zero MATCH signals; on simulated digits with a real bias or a hidden 1st/2nd-order sequence it passed the gate just after warm-up and won 30–42% of the time. On Deriv's RNG-driven indices, expect SKIP.
+
+Dashboard: **Adaptive Digit Engine** panel (analyze one market or scan all ten), strategy picker in the trading session, engine reasons in session results, and gated/ungated engine rows in backtests.
 
 ## Strategies (`STRATEGY=`)
 `coldest` (least frequent digit), `hottest`, `repeat_last`, `random` (baseline). If nothing beats `random` over thousands of trades, nothing has an edge.
@@ -53,4 +62,4 @@ docker run --env-file .env -v $PWD/trades.csv:/app/trades.csv deriv-matches-agen
 To surface results in the Signal Lab dashboard, have the FastAPI app read `trades.csv` (or swap `Journal` for a database writer).
 
 ## Files
-`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI
+`deriv_client.py` WebSocket API client · `analyzer.py` digit stats + strategies · `risk.py` stops · `engine.py` adaptive engine · `journal.py` log + stats · `stats.py` chi-square/binomial maths · `agent.py` always-on loop · `services.py` web sessions · `app.py` + `dashboard.py` web layer · `backtest.py` replay · `cli.py` CLI

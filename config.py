@@ -35,7 +35,7 @@ class Settings:
     symbols: tuple = field(default_factory=_symbols)
     stake: float = field(default_factory=lambda: _f("STAKE", "0.5"))
     currency: str = field(default_factory=lambda: os.getenv("CURRENCY", "USD"))
-    strategy: str = field(default_factory=lambda: os.getenv("STRATEGY", "coldest"))
+    strategy: str = field(default_factory=lambda: os.getenv("STRATEGY", "adaptive"))
     window: int = field(default_factory=lambda: _i("ANALYSIS_WINDOW", "500"))
     trade_every_n_ticks: int = field(default_factory=lambda: _i("TRADE_EVERY_N_TICKS", "10"))
 
@@ -64,3 +64,13 @@ class Settings:
     session_trade_every_n_ticks: int = field(default_factory=lambda: _i("SESSION_TRADE_EVERY_N_TICKS", "1"))
     # Auto market mode: re-check every market's payout every N trades (1 = before every trade)
     auto_rescan_every: int = field(default_factory=lambda: _i("AUTO_RESCAN_EVERY", "1"))
+
+    # Adaptive Digit Engine v2 (strategy "adaptive"). Defaults are deliberately strict.
+    adaptive_history: int = field(default_factory=lambda: _i("ADAPTIVE_HISTORY", "3000"))       # warm-up ticks per market
+    adaptive_min_samples: int = field(default_factory=lambda: _i("ADAPTIVE_MIN_SAMPLES", "1000"))
+    adaptive_max_p: float = field(default_factory=lambda: _f("ADAPTIVE_MAX_P", "0.01"))
+    adaptive_min_edge: float = field(default_factory=lambda: _f("ADAPTIVE_MIN_EDGE", "0.02"))
+    adaptive_min_separation: float = field(default_factory=lambda: _f("ADAPTIVE_MIN_SEPARATION", "0.005"))
+    adaptive_max_entropy: float = field(default_factory=lambda: _f("ADAPTIVE_MAX_ENTROPY", "0.99"))
+    adaptive_persistence: int = field(default_factory=lambda: _i("ADAPTIVE_PERSISTENCE", "30"))
+    adaptive_eta: float = field(default_factory=lambda: _f("ADAPTIVE_ETA", "0.1"))
